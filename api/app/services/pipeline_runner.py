@@ -58,35 +58,36 @@ class PipelineRunner:
                 return
             node_id = node["id"]
             yield ("node.started", node_id, {"message": f"Fetching {node['label']}..."})
-            await asyncio.sleep(0.3)
+            # Real fetch happens in optimizer stage; this is sequencing only
+            await asyncio.sleep(0.05)
             yield ("node.completed", node_id, {
                 "message": f"{node['label']} ready",
-                "duration_ms": 300,
+                "duration_ms": 50,
                 "status": "completed",
             })
 
-        # Stage 2: AI Agents
+        # Stage 2: AI Agents (simulated — real AI integration planned)
         for node in PIPELINE_GRAPH["nodes"]:
             if node["type"] != "aiAgent":
                 continue
             if self._cancelled:
                 return
             node_id = node["id"]
-            yield ("node.started", node_id, {"message": f"{node['label']} analyzing..."})
-            await asyncio.sleep(0.5)
+            yield ("node.started", node_id, {"message": f"{node['label']} (simulated)..."})
+            await asyncio.sleep(0.05)
             yield ("node.completed", node_id, {
-                "message": f"{node['label']} complete",
-                "duration_ms": 500,
+                "message": f"{node['label']} — simulated (AI integration planned)",
+                "duration_ms": 50,
                 "status": "completed",
             })
 
-        # Stage 3: Risk Model
+        # Stage 3: Risk Model (computed inside optimizer)
         if self._cancelled:
             return
         yield ("node.started", "risk.model", {
             "message": f"Computing {self.request.risk_model} covariance...",
         })
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
 
         # Stage 4: Optimizer — call real C++ engine
         yield ("node.completed", "risk.model", {
