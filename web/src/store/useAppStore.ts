@@ -5,6 +5,7 @@
  */
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import type { RunEvent, NodeStatusMap, RunResult } from '../App'
 import { type OptimizeConfig, DEFAULT_CONFIG } from '../components/config/ConfigPanel'
 
@@ -85,7 +86,9 @@ type AppState = {
   toggleChart: (chart: string) => void
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
   // Config
   config: DEFAULT_CONFIG,
   setConfig: (config) => set({ config }),
@@ -136,4 +139,26 @@ export const useAppStore = create<AppState>((set) => ({
       ? s.visibleCharts.filter((c) => c !== chart)
       : [...s.visibleCharts, chart],
   })),
-}))
+}),
+    {
+      name: 'openvolt-store',
+      storage: {
+        getItem: (name) => {
+          const str = sessionStorage.getItem(name)
+          return str ? JSON.parse(str) : null
+        },
+        setItem: (name, value) => {
+          sessionStorage.setItem(name, JSON.stringify(value))
+        },
+        removeItem: (name) => sessionStorage.removeItem(name),
+      },
+      // Only persist lightweight state, not large data arrays
+      partialize: (state) => ({
+        config: state.config,
+        backtestConfig: state.backtestConfig,
+        visibleCharts: state.visibleCharts,
+        experimentMode: state.experimentMode,
+      }),
+    }
+  )
+)

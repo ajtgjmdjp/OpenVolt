@@ -208,6 +208,33 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
         peak = max(peak, cum)
         mdd = max(mdd, (peak - cum) / peak)
 
+    # Fetch real index series for overlay
+    index_series = None
+    index_symbol = None
+    pid = preset_id.lower()
+    if "topix" in pid:
+        index_symbol = "^N225"  # Use Nikkei as proxy (TOPIX has limited yfinance data)
+    elif "nikkei" in pid:
+        index_symbol = "^N225"
+    elif "sp500" in pid or "sp_" in pid or "us_" in pid:
+        index_symbol = "^GSPC"
+
+    if index_symbol:
+        try:
+            idx_data = yf.download(index_symbol, period=period, progress=False)
+            if not idx_data.empty:
+                idx_close = idx_data["Close"]
+                idx_first = float(idx_close.iloc[0].item() if hasattr(idx_close.iloc[0], 'item') else idx_close.iloc[0])
+                index_series = []
+                for i in range(len(idx_close)):
+                    val = float(idx_close.iloc[i].item() if hasattr(idx_close.iloc[i], 'item') else idx_close.iloc[i])
+                    index_series.append({
+                        "date": str(idx_close.index[i].date()),
+                        "value": round(val / idx_first * 100, 2),  # Normalize to 100
+                    })
+        except Exception:
+            pass
+
     return {
         "summary": {
             "annualized_return": round(ann_ret, 6),
@@ -222,4 +249,6 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
             "currency": preset.get("currency", "JPY"),
         },
         "daily": daily_data,
+        "index_series": index_series,
+        "index_symbol": index_symbol,
     }

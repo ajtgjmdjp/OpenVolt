@@ -18,9 +18,13 @@ type DailySnap = {
   trade_count: number
 }
 
+type IndexPoint = { date: string; value: number }
+
 type BacktestResult = {
   summary: Record<string, unknown>
   daily: DailySnap[]
+  index_series?: IndexPoint[]
+  index_symbol?: string
 } | null
 
 function KPI({ label, value }: { label: string; value: string }) {
@@ -114,18 +118,25 @@ export function BacktestView(_props: { embedded?: boolean }) {
   // Find rebalance dates for markers
 
 
+  // Build index lookup for real index overlay
+  const indexSeries = result?.index_series || []
+  const indexMap = new Map(indexSeries.map((p) => [p.date, p.value]))
+  const indexSymbol = result?.index_symbol || ''
+
   // Chart data: normalize NAV to 100 + compute drawdown
   let peak = 100
   const chartData = daily.map((d) => {
     const portfolio = d.nav ? (d.nav / (daily[0]?.nav || 1)) * 100 : 100
     peak = Math.max(peak, portfolio)
     const drawdown = ((peak - portfolio) / peak) * -100
+    const indexVal = indexMap.get(d.date) ?? null
 
     return {
-      date: d.date,  // Full date as key (unique)
+      date: d.date,
       fullDate: d.date,
       portfolio,
       benchmark: d.benchmark_nav ? (d.benchmark_nav / (daily[0]?.benchmark_nav || 1)) * 100 : 100,
+      index: indexVal,
       te: d.rolling_te * 100,
       drawdown,
       rebalanced: d.rebalanced,
@@ -278,6 +289,9 @@ export function BacktestView(_props: { embedded?: boolean }) {
                 />
                 <Line type="monotone" dataKey="portfolio" stroke="#00d4ff" strokeWidth={1.5} dot={false} name="portfolio" />
                 <Line type="monotone" dataKey="benchmark" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="benchmark" />
+                {indexSymbol && (
+                  <Line type="monotone" dataKey="index" stroke="#ef4444" strokeWidth={1} dot={false} strokeDasharray="2 2" name={indexSymbol} connectNulls />
+                )}
                 {/* Rebalance markers */}
                 {chartData.filter(d => d.rebalanced).map((d, i) => (
                   <ReferenceLine key={i} x={d.date} stroke="#22c55e33" strokeWidth={1} />

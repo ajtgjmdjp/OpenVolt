@@ -174,6 +174,12 @@ export function ConfigPanel({ config, onChange }: Props) {
             { value: 'blend', label: 'Blend (EWMA + Sample)' },
           ]}
           onChange={(v) => update('risk_model', v)} />
+        <Select label="Solver" value={'osqp'}
+          options={[
+            { value: 'osqp', label: 'OSQP (default)' },
+            { value: 'clarabel', label: 'Clarabel (planned)' },
+          ]}
+          onChange={() => {}} />
         <Select label="Tax Jurisdiction" value={config.tax_jurisdiction}
           options={[
             { value: 'japan', label: 'Japan (20.315%)' },
