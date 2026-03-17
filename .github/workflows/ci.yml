@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cpp-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libgtest-dev
+          # Build OSQP from source
+          git clone --branch v1.0.0 --depth 1 https://github.com/osqp/osqp.git /tmp/osqp
+          cd /tmp/osqp && mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc) && sudo make install
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install eigen osqp googletest cmake
+
+      - name: Build C++ core
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Run C++ tests
+        run: ./build/tests/openvolt_tests
+
+  python-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: brew install eigen osqp cmake
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install pybind11 numpy cvxpy
+
+      - name: Build with Python bindings
+        run: |
+          source .venv/bin/activate
+          PYBIND11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DOPENVOLT_BUILD_PYTHON=ON -Dpybind11_DIR="$PYBIND11_DIR"
+          cmake --build build
+
+      - name: Run cvxpy parity tests
+        run: |
+          source .venv/bin/activate
+          cd build && python ../tests/test_cvxpy_parity.py
+          python ../tests/test_cvxpy_parity_complex.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install and build
+        working-directory: web
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+
+  sdist-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for secrets in tracked files
+        run: |
+          if git ls-files | grep -iE '\.env$|\.pem$|\.key$|tokens'; then
+            echo "ERROR: Potential secret files found in tracked files"
+            exit 1
+          fi
+          echo "No secret files found"

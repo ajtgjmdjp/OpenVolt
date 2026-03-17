@@ -1,0 +1,38 @@
+# Build
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+*.whl
+.venv/
+
+# Node
+web/node_modules/
+web/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Output
+output/
