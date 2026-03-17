@@ -202,8 +202,25 @@ export function ArtifactViewer({ itemId, filePath }: Props) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* File header */}
+      {/* File header + download */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0 bg-[var(--color-surface)]">
+        <button
+          onClick={() => {
+            const blob = new Blob([content.raw], { type: 'text/plain' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = filePath?.split('/').pop() || 'download'
+            a.click()
+            URL.revokeObjectURL(url)
+          }}
+          className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-2 py-1 rounded border border-[var(--color-border)]"
+          title="Download file"
+        >
+          ⬇ Download
+        </button>
+      </div>
+      <div className="flex items-center gap-2 px-4 py-1 shrink-0">
         <span className="text-xs mono text-[var(--color-text-dim)]">{filePath}</span>
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)] uppercase">
           {content.type}

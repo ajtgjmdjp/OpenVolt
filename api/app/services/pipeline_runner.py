@@ -150,11 +150,15 @@ class PipelineRunner:
                 config={
                     "preset_id": self.request.preset_id,
                     "risk_model": self.request.risk_model,
+                    "solver": "osqp",
+                    "disposal_method": self.request.disposal_method,
                     "period": date_label,
                     "period_code": self.request.period,
                     "data_start": data_range.get("start"),
                     "data_end": data_range.get("end"),
                     "trading_days": data_range.get("trading_days"),
+                    "openvolt_version": "0.1.0",
+                    "artifact_version": 1,
                 },
                 summary=opt_result["summary"],
                 artifacts={
