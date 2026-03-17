@@ -1,0 +1,13 @@
+{
+  "preset_id": "jp_topix_demo",
+  "risk_model": "sample",
+  "solver": "osqp",
+  "disposal_method": "specific_id",
+  "period": "2025-03-17 to 2026-03-17",
+  "period_code": "1y",
+  "data_start": "2025-03-17",
+  "data_end": "2026-03-17",
+  "trading_days": 245,
+  "openvolt_version": "0.1.0",
+  "artifact_version": 1
+}
