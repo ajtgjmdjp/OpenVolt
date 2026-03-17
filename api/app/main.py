@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routes import health, meta, runs, backtests, experiments, workspace, benchmarks, import_data
+from .routes import health, meta, runs, backtests, experiments, workspace, benchmarks, import_data, reports
 
 app = FastAPI(
     title="OpenVolt API",
@@ -26,3 +26,4 @@ app.include_router(experiments.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(benchmarks.router, prefix="/api")
 app.include_router(import_data.router, prefix="/api")
+app.include_router(reports.router, prefix="/api")

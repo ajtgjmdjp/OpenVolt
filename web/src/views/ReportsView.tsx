@@ -54,28 +54,30 @@ export function ReportsView() {
     setGenerating(true)
     setMessages((prev) => [...prev, { role: 'user', content: input || 'Generate an investment report from the selected artifacts.' }])
 
-    // Gather artifact data
-    const artifacts: Record<string, unknown>[] = []
-    for (const id of selectedIds) {
-      const item = items.find((i) => i.id === id)
-      if (!item) continue
-      artifacts.push({
-        id: item.id,
-        kind: item.kind,
-        title: item.title,
-        summary: item.summary_json ? JSON.parse(item.summary_json) : null,
-        config: item.config_json ? JSON.parse(item.config_json) : null,
+    try {
+      const res = await fetch('/api/reports/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artifact_ids: Array.from(selectedIds),
+          prompt: input || 'Generate a comprehensive investment report.',
+        }),
       })
+      const data = await res.json()
+
+      setReport(data.report || 'Failed to generate report.')
+
+      const method = data.method === 'ai' ? `AI (${data.model})` : 'Template'
+      setMessages((prev) => [...prev, {
+        role: 'assistant',
+        content: `Generated report via ${method} from ${selectedIds.size} artifact(s).${data.ai_error ? ` (AI fallback: ${data.ai_error})` : ''} See the editor below.`,
+      }])
+    } catch (e) {
+      setMessages((prev) => [...prev, {
+        role: 'assistant',
+        content: `Error: ${String(e)}`,
+      }])
     }
-
-    // Generate markdown report from artifacts (client-side for MVP)
-    const reportMd = generateMarkdownReport(artifacts, input)
-    setReport(reportMd)
-
-    setMessages((prev) => [...prev, {
-      role: 'assistant',
-      content: `Generated report from ${artifacts.length} artifact(s). See the editor on the right.`,
-    }])
 
     setInput('')
     setGenerating(false)
