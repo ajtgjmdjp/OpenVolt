@@ -68,28 +68,5 @@ private:
     int halflife_;
 };
 
-/// Blend of two risk models (e.g., short-term EWMA + long-term sample).
-class BlendRiskModel final : public RiskModel {
-public:
-    BlendRiskModel(
-        std::unique_ptr<RiskModel> short_term,
-        std::unique_ptr<RiskModel> long_term,
-        double blend_ratio = 0.7  // Weight on short-term
-    ) : short_term_(std::move(short_term)),
-        long_term_(std::move(long_term)),
-        blend_ratio_(blend_ratio) {}
-
-    [[nodiscard]] Matrix estimate(
-        const Matrix& returns,
-        std::span<const Ticker> tickers
-    ) const override;
-
-    [[nodiscard]] std::string name() const override { return "blend"; }
-
-private:
-    std::unique_ptr<RiskModel> short_term_;
-    std::unique_ptr<RiskModel> long_term_;
-    double blend_ratio_;
-};
 
 } // namespace openvolt

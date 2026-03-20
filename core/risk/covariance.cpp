@@ -178,18 +178,6 @@ Matrix FactorRiskModel::estimate(
 }
 
 // ---------------------------------------------------------------------------
-// BlendRiskModel
-// ---------------------------------------------------------------------------
-Matrix BlendRiskModel::estimate(
-    const Matrix& returns,
-    std::span<const Ticker> tickers
-) const {
-    const Matrix short_cov = short_term_->estimate(returns, tickers);
-    const Matrix long_cov = long_term_->estimate(returns, tickers);
-    return blend_ratio_ * short_cov + (1.0 - blend_ratio_) * long_cov;
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 std::unique_ptr<RiskModel> make_risk_model(
@@ -205,12 +193,6 @@ std::unique_ptr<RiskModel> make_risk_model(
         return std::make_unique<ShrinkageRiskModel>();
     } else if (method == "factor") {
         return std::make_unique<FactorRiskModel>();
-    } else if (method == "blend") {
-        auto short_term = std::make_unique<EWMARiskModel>(decay);
-        auto long_term = std::make_unique<SampleRiskModel>(window);
-        return std::make_unique<BlendRiskModel>(
-            std::move(short_term), std::move(long_term)
-        );
     }
     throw std::invalid_argument("Unknown risk model method: " + method);
 }

@@ -31,7 +31,7 @@ jobs:
 
       - name: Build C++ core
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DOPENVOLT_WITH_SCS=OFF
           cmake --build build
 
       - name: Run C++ tests
@@ -59,7 +59,7 @@ jobs:
         run: |
           source .venv/bin/activate
           PYBIND11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DOPENVOLT_BUILD_PYTHON=ON -Dpybind11_DIR="$PYBIND11_DIR"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DOPENVOLT_BUILD_PYTHON=ON -DOPENVOLT_BUILD_TESTS=OFF -Dpybind11_DIR="$PYBIND11_DIR"
           cmake --build build
 
       - name: Run cvxpy parity tests
