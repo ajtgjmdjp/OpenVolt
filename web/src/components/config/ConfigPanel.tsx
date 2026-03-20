@@ -191,7 +191,6 @@ export function ConfigPanel({ config, onChange }: Props) {
             { value: 'ewma', label: 'EWMA' },
             { value: 'shrinkage', label: 'Ledoit-Wolf Shrinkage' },
             { value: 'factor', label: 'Factor Model' },
-            { value: 'blend', label: 'Blend (EWMA + Sample)' },
           ]}
           onChange={(v) => update('risk_model', v)} />
         <Select label="Solver" value={config.solver || 'osqp'}

@@ -38,7 +38,7 @@ Reformulated as a QP with auxiliary variables and solved via OSQP in C++20.
 ## Features
 
 ### Core Engine (C++20)
-- **5 risk models** — Sample covariance, EWMA, Ledoit-Wolf shrinkage, PCA factor model, blend
+- **4 risk models** — Sample covariance, EWMA, Ledoit-Wolf shrinkage, PCA factor model
 - **Multi-objective QP** — Tracking error + transaction cost + tax cost
 - **Tax lot tracking** — FIFO, LIFO, specific identification (tax-optimal default)
 - **Tax policies** — Japan (flat 20.315%, no wash sale) and US (ST/LT rates, 30-day wash sale rule)
