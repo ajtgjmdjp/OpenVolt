@@ -46,6 +46,8 @@ async def _run_backtest(backtest_id: str, req: CreateBacktestRequest):
             req.rebalance_frequency,
             req.objective.tracking_error if req.objective else 200.0,
             req.objective.tax_cost if req.objective else 400.0,
+            req.market_indices,
+            getattr(req, 'solver', 'osqp') or 'osqp',
         )
 
         _results[backtest_id] = {
@@ -72,12 +74,16 @@ async def _run_backtest(backtest_id: str, req: CreateBacktestRequest):
                 config={
                     "preset_id": req.preset_id,
                     "risk_model": req.risk_model,
+                    "solver": getattr(req, 'solver', 'osqp') or 'osqp',
                     "period": date_label,
                     "period_code": req.period,
                     "data_start": date_start,
                     "data_end": date_end,
                     "trading_days": len(daily),
                     "rebalance_frequency": req.rebalance_frequency,
+                    "lambda_te": req.objective.tracking_error if req.objective else 200,
+                    "lambda_tcost": req.objective.transaction_cost if req.objective else 0,
+                    "lambda_tax": req.objective.tax_cost if req.objective else 400,
                 },
                 summary=result.get("summary", {}),
                 artifacts={

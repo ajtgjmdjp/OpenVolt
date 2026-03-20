@@ -1,7 +1,6 @@
 #include "api.hpp"
-#include <osqp.h>
+#include "core/optimizer/optimizer.hpp"
 #include <Eigen/Dense>
-#include <Eigen/Sparse>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -135,16 +134,9 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
     }
 
     // -----------------------------------------------------------------------
-    // Build QP: min  0.5 * x' P x + q' x
-    //           s.t. l <= Ax <= u
-    //
-    // Decision: x = [w (N), t (N)]  where t_i = |w_i - w_current_i|
-    // -----------------------------------------------------------------------
-
-    const int n_vars = 2 * N;
-
     // Trace normalization: scale covariance so trace(Cov) = N
     // This makes lambda_te independent of universe size and volatility level
+    // -----------------------------------------------------------------------
     double cov_scale = 1.0;
     const double cov_trace = cov.trace();
     if (cov_trace > 1e-12) {
@@ -152,192 +144,70 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
     }
     const Eigen::MatrixXd cov_scaled = cov * cov_scale;
 
-    // P matrix (upper triangular)
-    const double lambda_te = config.objective.tracking_error;
-    std::vector<Eigen::Triplet<double>> P_triplets;
+    // -----------------------------------------------------------------------
+    // Build OptimizationParams from config
+    // -----------------------------------------------------------------------
+    openvolt::OptimizationParams opt_params;
+    opt_params.lambda_te = config.objective.tracking_error;
+    opt_params.lambda_tcost = config.objective.transaction_cost;
+    opt_params.lambda_tax = config.objective.tax_cost;
+    opt_params.tax_rate = config.taxes.short_term_rate;
+    opt_params.turnover_cap = config.constraints.max_turnover;
+    opt_params.weight_cap = 1.0;  // Default, overridden by per-asset bounds
+    opt_params.invest_fraction = std::max(0.0, 1.0 - config.constraints.cash_buffer / total_value);
+
+    // Per-asset transaction costs
+    opt_params.tcost_frac = tcost_frac;
+
+    // Per-asset weight bounds
     for (int i = 0; i < N; ++i) {
-        for (int j = i; j < N; ++j) {
-            double val = 2.0 * lambda_te * cov_scaled(i, j);
-            if (std::abs(val) > 1e-15) {
-                P_triplets.emplace_back(i, j, val);
-            }
-        }
-    }
-    Eigen::SparseMatrix<double, Eigen::ColMajor, OSQPInt> P_eigen(n_vars, n_vars);
-    P_eigen.setFromTriplets(P_triplets.begin(), P_triplets.end());
-    P_eigen.makeCompressed();
-
-    // q vector
-    Eigen::VectorXd q(n_vars);
-    q.head(N) = -2.0 * lambda_te * cov_scaled * w_bench;
-    for (int i = 0; i < N; ++i) {
-        double tax_penalty = 0.0;
-        if (unrealized_gains(i) > 0.0) {
-            // Use appropriate tax rate
-            tax_penalty = config.objective.tax_cost * unrealized_gains(i)
-                          * config.taxes.short_term_rate;
-        }
-        // Turnover penalty = base weight (transaction_cost) + per-asset cost (bps)
-        double turnover_penalty = config.objective.transaction_cost + tcost_frac(i);
-        q(N + i) = turnover_penalty + tax_penalty;
-    }
-
-    // Constraints
-    // Row 0:           sum(w) = 1 - cash_buffer_fraction
-    // Row 1..N:        lb <= w_i <= ub
-    // Row N+1..2N:     w_i - w_c_i <= t_i
-    // Row 2N+1..3N:    -(w_i - w_c_i) <= t_i
-    // Row 3N+1..4N:    t_i >= 0
-    // Row 4N+1:        sum(t) / 2 <= max_turnover (optional)
-
-    const double cash_fraction = config.constraints.cash_buffer / total_value;
-    const double invest_fraction = std::max(0.0, 1.0 - cash_fraction);
-
-    const bool has_turnover = config.constraints.max_turnover < 1.0;
-    const int n_constraints = 1 + N + 2 * N + N + (has_turnover ? 1 : 0);
-
-    std::vector<Eigen::Triplet<double>> A_triplets;
-
-    // Row 0: sum(w) = invest_fraction
-    for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(0, i, 1.0);
-    }
-
-    // Rows 1..N: w_i bounds
-    for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + i, i, 1.0);
-    }
-
-    // Rows N+1..2N: w_i - t_i <= w_c_i
-    for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + N + i, i, 1.0);
-        A_triplets.emplace_back(1 + N + i, N + i, -1.0);
-    }
-
-    // Rows 2N+1..3N: -w_i - t_i <= -w_c_i
-    for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + 2 * N + i, i, -1.0);
-        A_triplets.emplace_back(1 + 2 * N + i, N + i, -1.0);
-    }
-
-    // Rows 3N+1..4N: t_i >= 0
-    for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + 3 * N + i, N + i, 1.0);
-    }
-
-    // Optional turnover constraint
-    if (has_turnover) {
-        for (int i = 0; i < N; ++i) {
-            A_triplets.emplace_back(1 + 4 * N, N + i, 0.5);
-        }
-    }
-
-    Eigen::SparseMatrix<double, Eigen::ColMajor, OSQPInt> A_eigen(n_constraints, n_vars);
-    A_eigen.setFromTriplets(A_triplets.begin(), A_triplets.end());
-    A_eigen.makeCompressed();
-
-    // Bounds
-    Eigen::VectorXd l(n_constraints), u(n_constraints);
-
-    // Row 0: sum = invest_fraction
-    l(0) = invest_fraction;
-    u(0) = invest_fraction;
-
-    // Rows 1..N: weight bounds
-    for (int i = 0; i < N; ++i) {
-        double lb = 0.0;
-        double ub = 1.0;
         auto it = config.constraints.weight_bounds.find(market.asset_ids[i]);
         if (it != config.constraints.weight_bounds.end()) {
-            lb = it->second.min_weight;
-            ub = it->second.max_weight;
+            opt_params.per_asset_bounds[i] = {it->second.min_weight, it->second.max_weight};
+        } else {
+            opt_params.per_asset_bounds[i] = {0.0, 1.0};
         }
-        // No-buy: fix weight at current or lower
-        if (config.constraints.no_buy.count(market.asset_ids[i])) {
-            ub = std::min(ub, w_current(i));
-        }
-        // No-sell: fix weight at current or higher
-        if (config.constraints.no_sell.count(market.asset_ids[i])) {
-            lb = std::max(lb, w_current(i));
-        }
-        l(1 + i) = lb;
-        u(1 + i) = ub;
     }
 
-    // Absolute value constraints
+    // No-buy / no-sell
     for (int i = 0; i < N; ++i) {
-        l(1 + N + i) = -1e30;
-        u(1 + N + i) = w_current(i);
-        l(1 + 2 * N + i) = -1e30;
-        u(1 + 2 * N + i) = -w_current(i);
-        l(1 + 3 * N + i) = 0.0;
-        u(1 + 3 * N + i) = 1e30;
-    }
-
-    // Turnover constraint
-    if (has_turnover) {
-        l(1 + 4 * N) = -1e30;
-        u(1 + 4 * N) = config.constraints.max_turnover;
-    }
-
-    // -----------------------------------------------------------------------
-    // Solve with OSQP
-    // -----------------------------------------------------------------------
-
-    OSQPSolver* solver = nullptr;
-    OSQPSettings settings;
-    osqp_set_default_settings(&settings);
-    settings.verbose = false;
-    settings.eps_abs = 1e-6;
-    settings.eps_rel = 1e-6;
-    settings.max_iter = 10000;
-
-    OSQPCscMatrix P_csc;
-    P_csc.m = n_vars;
-    P_csc.n = n_vars;
-    P_csc.nzmax = P_eigen.nonZeros();
-    P_csc.x = const_cast<double*>(P_eigen.valuePtr());
-    P_csc.i = const_cast<OSQPInt*>(P_eigen.innerIndexPtr());
-    P_csc.p = const_cast<OSQPInt*>(P_eigen.outerIndexPtr());
-    P_csc.nz = -1;
-
-    OSQPCscMatrix A_csc;
-    A_csc.m = n_constraints;
-    A_csc.n = n_vars;
-    A_csc.nzmax = A_eigen.nonZeros();
-    A_csc.x = const_cast<double*>(A_eigen.valuePtr());
-    A_csc.i = const_cast<OSQPInt*>(A_eigen.innerIndexPtr());
-    A_csc.p = const_cast<OSQPInt*>(A_eigen.outerIndexPtr());
-    A_csc.nz = -1;
-
-    OSQPInt exit_flag = osqp_setup(
-        &solver, &P_csc, q.data(), &A_csc, l.data(), u.data(),
-        n_constraints, n_vars, &settings
-    );
-
-    if (exit_flag != 0) {
-        result.diagnostics.solver_status = "setup_failed";
-        return result;
-    }
-
-    exit_flag = osqp_solve(solver);
-
-    if (exit_flag == 0 && solver->info->status_val == OSQP_SOLVED) {
-        result.diagnostics.converged = true;
-        result.diagnostics.solver_status = "solved";
-        result.diagnostics.objective_value = solver->info->obj_val;
-
-        // Extract target weights
-        for (int i = 0; i < N; ++i) {
-            result.target_weights[i] = std::max(0.0, solver->solution->x[i]);
+        if (config.constraints.no_buy.count(market.asset_ids[i])) {
+            opt_params.no_buy.insert(i);
         }
+        if (config.constraints.no_sell.count(market.asset_ids[i])) {
+            opt_params.no_sell.insert(i);
+        }
+    }
 
-        // Compute diagnostics
-        Eigen::VectorXd w_target = to_eigen_vec(result.target_weights);
-        Eigen::VectorXd active = w_target - w_bench;
+    // -----------------------------------------------------------------------
+    // Solve via Optimizer interface (OSQP or SCS)
+    // -----------------------------------------------------------------------
+    std::unique_ptr<openvolt::Optimizer> optimizer;
+    try {
+        optimizer = openvolt::make_optimizer(config.solver);
+    } catch (const std::invalid_argument&) {
+        // Unknown solver — fall back to OSQP
+        optimizer = openvolt::make_optimizer("osqp");
+    }
+    auto opt_result = optimizer->solve(w_bench, w_current, cov_scaled, unrealized_gains, opt_params);
+
+    result.diagnostics.converged = opt_result.converged;
+    result.diagnostics.solver_status = opt_result.solver_status;
+    result.diagnostics.objective_value = opt_result.objective_value;
+    result.diagnostics.turnover = opt_result.predicted_turnover;
+
+    // Recompute TE using original (non-normalized) covariance
+    if (opt_result.converged) {
+        Eigen::VectorXd active = opt_result.target_weights - w_bench;
         double variance = static_cast<double>(active.transpose() * cov * active);
         result.diagnostics.ex_ante_tracking_error = std::sqrt(std::max(0.0, variance) * 252.0);
-        result.diagnostics.turnover = (w_target - w_current).cwiseAbs().sum() / 2.0;
+    }
+
+    if (opt_result.converged) {
+        // Extract target weights
+        for (int i = 0; i < N; ++i) {
+            result.target_weights[i] = std::max(0.0, opt_result.target_weights(i));
+        }
 
         // Generate trades
         for (int i = 0; i < N; ++i) {
@@ -477,11 +347,8 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
                 }
             }
         }
-    } else {
-        result.diagnostics.solver_status = solver->info->status;
     }
 
-    osqp_cleanup(solver);
     return result;
 }
 

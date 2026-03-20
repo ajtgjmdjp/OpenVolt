@@ -59,17 +59,29 @@ class WorkspaceStore:
     # CRUD
     # -----------------------------------------------------------------------
 
+    _VALID_KINDS = {"run", "backtest", "experiment", "config", "report"}
+
+    @staticmethod
+    def _sanitize(name: str) -> str:
+        """Reject path separators and traversal patterns."""
+        if ".." in name or "/" in name or "\\" in name:
+            raise ValueError(f"Invalid path component: {name}")
+        return name
+
     def save_item(self, id: str, kind: str, title: str,
                   config: dict | None = None,
                   summary: dict | None = None,
                   artifacts: dict[str, str | bytes] | None = None,
                   tags: list[str] | None = None) -> dict:
         """Save a workspace item with optional artifacts."""
+        self._sanitize(id)
+        if kind not in self._VALID_KINDS:
+            raise ValueError(f"Invalid kind: {kind}")
         now = datetime.now(timezone.utc).isoformat()
 
         # Determine artifact directory
         kind_dir = {"run": "runs", "backtest": "backtests", "experiment": "experiments",
-                    "config": "configs", "report": "reports"}.get(kind, kind + "s")
+                    "config": "configs", "report": "reports"}[kind]
         artifact_dir = f"{kind_dir}/{id}"
         full_dir = self.root / artifact_dir
         full_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +95,7 @@ class WorkspaceStore:
         # Save additional artifacts
         if artifacts:
             for name, content in artifacts.items():
+                self._sanitize(name)
                 path = full_dir / name
                 if isinstance(content, bytes):
                     path.write_bytes(content)
@@ -151,6 +164,11 @@ class WorkspaceStore:
         if not item or not item.get("artifact_dir"):
             return None
         path = self.root / item["artifact_dir"] / artifact_name
+        # Security: prevent path traversal
+        try:
+            path.resolve().relative_to((self.root / item["artifact_dir"]).resolve())
+        except ValueError:
+            return None
         if path.exists():
             return path.read_text()
         return None

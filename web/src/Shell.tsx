@@ -7,12 +7,11 @@ import { BacktestView } from './views/BacktestView'
 import { ExperimentsView } from './views/ExperimentsView'
 import { CompareView } from './views/CompareView'
 import { ReportsView } from './views/ReportsView'
-import { useAppStore } from './store/useAppStore'
 import './index.css'
 
 export function Shell() {
   const [activity, setActivity] = useState('studio')
-  const [studioMode, setStudioMode] = useState<'optimize' | 'backtest' | 'experiments'>('optimize')
+  const [studioMode, setStudioMode] = useState<'optimize' | 'backtest' | 'experiments'>('backtest')
 
   // Explorer state
   const [selectedFile, setSelectedFile] = useState<{ itemId: string; path: string } | null>(null)
@@ -111,17 +110,21 @@ export function Shell() {
               <span className="text-sm font-medium text-[var(--color-text)]">OpenVolt</span>
             </div>
             <nav className="flex items-center gap-1">
-              {(['optimize', 'backtest', 'experiments'] as const).map((mode) => (
+              {([
+                { id: 'backtest' as const, label: 'Backtest' },
+                { id: 'experiments' as const, label: 'Experiments' },
+                { id: 'optimize' as const, label: 'Rebalance' },
+              ]).map(({ id, label }) => (
                 <button
-                  key={mode}
-                  onClick={() => setStudioMode(mode)}
-                  className={`px-3 py-1 rounded text-xs transition-colors capitalize ${
-                    studioMode === mode
+                  key={id}
+                  onClick={() => setStudioMode(id)}
+                  className={`px-3 py-1 rounded text-xs transition-colors ${
+                    studioMode === id
                       ? 'bg-[var(--color-surface-2)] text-[var(--color-text)]'
                       : 'text-[var(--color-text-dim)] hover:text-[var(--color-text)]'
                   }`}
                 >
-                  {mode}
+                  {label}
                 </button>
               ))}
             </nav>

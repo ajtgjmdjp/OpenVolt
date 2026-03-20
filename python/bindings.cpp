@@ -180,7 +180,8 @@ PYBIND11_MODULE(_openvolt, m) {
         .def_readwrite("taxes", &ov::OptimizationConfig::taxes)
         .def_readwrite("objective", &ov::OptimizationConfig::objective)
         .def_readwrite("min_trade_notional", &ov::OptimizationConfig::min_trade_notional)
-        .def_readwrite("round_to_whole_shares", &ov::OptimizationConfig::round_to_whole_shares);
+        .def_readwrite("round_to_whole_shares", &ov::OptimizationConfig::round_to_whole_shares)
+        .def_readwrite("solver", &ov::OptimizationConfig::solver);
 
     // --- MarketData ---
     py::class_<ov::MarketData>(m, "MarketData")

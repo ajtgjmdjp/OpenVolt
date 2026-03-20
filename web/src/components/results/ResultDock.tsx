@@ -73,7 +73,7 @@ function OverviewTab({ result }: { result: RunResult }) {
                 labelStyle={{ color: '#8888a0' }}
               />
               <Line type="monotone" dataKey="portfolio" stroke="#00d4ff" strokeWidth={1.5} dot={false} name="Portfolio" />
-              <Line type="monotone" dataKey="benchmark" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="Benchmark" />
+              <Line type="monotone" dataKey="benchmark" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="Target Benchmark" />
             </LineChart>
           </ResponsiveContainer>
         </div>

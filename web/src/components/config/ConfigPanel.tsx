@@ -5,8 +5,14 @@ export type OptimizeConfig = {
   custom_tickers: string[]  // Empty = use preset default
   num_holdings: number      // 0 = use all from preset
   risk_model: string
+  solver: string
   disposal_method: string
   tax_jurisdiction: string
+  tax_settlement_model: string   // 'source_withholding' | 'annual_filing' | 'custom'
+  fiscal_year_mode: string       // 'jan_dec' | 'apr_mar' | 'oct_sep' | 'custom'
+  fiscal_year_start_month: number // 1-12 (used when fiscal_year_mode='custom')
+  settlement_delay_months: number // months after period end
+  market_indices: string[]   // e.g. ['^N225', '^GSPC'] — empty = auto from preset
   period: string            // '1m','3m','6m','1y','2y','3y','custom'
   date_start: string        // YYYY-MM-DD (used when period='custom')
   date_end: string          // YYYY-MM-DD (used when period='custom')
@@ -25,8 +31,14 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   custom_tickers: [],
   num_holdings: 0,
   risk_model: 'sample',
+  solver: 'osqp',
   disposal_method: 'specific_id',
   tax_jurisdiction: 'japan',
+  tax_settlement_model: 'source_withholding',
+  fiscal_year_mode: 'jan_dec',
+  fiscal_year_start_month: 1,
+  settlement_delay_months: 3,
+  market_indices: [],  // empty = auto-detect from preset
   period: '1y',
   date_start: '',
   date_end: '',
@@ -100,7 +112,8 @@ export function ConfigPanel({ config, onChange }: Props) {
         <Select label="Preset" value={config.preset_id}
           options={[
             { value: 'jp_topix_demo', label: 'TOPIX Core30 (10 stocks)' },
-            { value: 'jp_nikkei225', label: 'Nikkei 225 (Top 15)' },
+            { value: 'jp_nikkei225_30', label: 'Nikkei 225 (Top 30)' },
+            { value: 'jp_nikkei225_100', label: 'Nikkei 225 (100 stocks)' },
             { value: 'us_sp500_mega', label: 'S&P 500 Mega Cap (10)' },
             { value: 'us_sp500_tech', label: 'S&P 500 Tech (12)' },
             { value: 'global_diversified', label: 'Global Diversified (10)' },
@@ -110,9 +123,15 @@ export function ConfigPanel({ config, onChange }: Props) {
             if (v.startsWith('jp_')) {
               updates.tax_jurisdiction = 'japan'
               updates.tax_rate = 0.20315
+              updates.tax_settlement_model = 'source_withholding'
+              updates.fiscal_year_mode = 'jan_dec'
+              updates.settlement_delay_months = 3
             } else if (v.startsWith('us_')) {
               updates.tax_jurisdiction = 'us'
               updates.tax_rate = 0.37
+              updates.tax_settlement_model = 'annual_filing'
+              updates.fiscal_year_mode = 'jan_dec'
+              updates.settlement_delay_months = 4
             }
             onChange({ ...config, ...updates })
           }} />
@@ -160,6 +179,7 @@ export function ConfigPanel({ config, onChange }: Props) {
             { value: 'monthly', label: 'Monthly' },
           ]}
           onChange={(v) => update('rebalance_frequency', v)} />
+        <MarketIndexEditor config={config} onChange={onChange} />
       </div>
 
       {/* Model */}
@@ -174,21 +194,53 @@ export function ConfigPanel({ config, onChange }: Props) {
             { value: 'blend', label: 'Blend (EWMA + Sample)' },
           ]}
           onChange={(v) => update('risk_model', v)} />
-        <Select label="Solver" value={'osqp'}
+        <Select label="Solver" value={config.solver || 'osqp'}
           options={[
             { value: 'osqp', label: 'OSQP (default)' },
-            { value: 'clarabel', label: 'Clarabel (planned)' },
+            { value: 'scs', label: 'SCS (Conic)' },
           ]}
-          onChange={() => {}} />
+          onChange={(v) => update('solver', v)} />
         <Select label="Tax Jurisdiction" value={config.tax_jurisdiction}
           options={[
             { value: 'japan', label: 'Japan (20.315%)' },
             { value: 'us', label: 'US (37% ST / 20% LT)' },
           ]}
           onChange={(v) => {
-            const taxRate = v === 'japan' ? 0.20315 : v === 'us' ? 0.37 : config.tax_rate
-            onChange({ ...config, tax_jurisdiction: v, tax_rate: taxRate })
+            const updates: Partial<OptimizeConfig> = { tax_jurisdiction: v }
+            if (v === 'japan') {
+              updates.tax_rate = 0.20315
+              updates.tax_settlement_model = 'source_withholding'
+              updates.fiscal_year_mode = 'jan_dec'
+              updates.settlement_delay_months = 3
+            } else if (v === 'us') {
+              updates.tax_rate = 0.37
+              updates.tax_settlement_model = 'annual_filing'
+              updates.fiscal_year_mode = 'jan_dec'
+              updates.settlement_delay_months = 4
+            }
+            onChange({ ...config, ...updates })
           }} />
+        <Select label="Tax Settlement" value={config.tax_settlement_model}
+          options={[
+            { value: 'source_withholding', label: 'Source Withholding (売買時控除)' },
+            { value: 'annual_filing', label: 'Annual Filing (年次申告)' },
+            { value: 'custom', label: 'Custom' },
+          ]}
+          onChange={(v) => update('tax_settlement_model', v)} />
+        <Select label="Fiscal Year" value={config.fiscal_year_mode}
+          options={[
+            { value: 'jan_dec', label: 'Jan - Dec' },
+            { value: 'apr_mar', label: 'Apr - Mar' },
+            { value: 'oct_sep', label: 'Oct - Sep' },
+            { value: 'custom', label: 'Custom' },
+          ]}
+          onChange={(v) => update('fiscal_year_mode', v)} />
+        {config.fiscal_year_mode === 'custom' && (
+          <NumberInput label="FY Start Month (1-12)" value={config.fiscal_year_start_month}
+            onChange={(v) => update('fiscal_year_start_month', v)} min={1} max={12} step={1} />
+        )}
+        <NumberInput label="Settlement Delay (months)" value={config.settlement_delay_months}
+          onChange={(v) => update('settlement_delay_months', v)} min={0} max={12} step={1} />
         <Select label="Lot Disposal" value={config.disposal_method}
           options={[
             { value: 'specific_id', label: 'Tax Optimal (Specific ID)' },
@@ -223,10 +275,74 @@ export function ConfigPanel({ config, onChange }: Props) {
   )
 }
 
+import { COMMON_INDICES } from '../../lib/commonIndices'
+
+function MarketIndexEditor({ config, onChange }: { config: OptimizeConfig; onChange: (c: OptimizeConfig) => void }) {
+  const [customInput, setCustomInput] = useState('')
+  const selected = config.market_indices || []
+
+  const toggle = (symbol: string) => {
+    const next = selected.includes(symbol)
+      ? selected.filter((s) => s !== symbol)
+      : [...selected, symbol]
+    onChange({ ...config, market_indices: next })
+  }
+
+  const addCustom = () => {
+    const sym = customInput.trim().toUpperCase()
+    if (sym && !selected.includes(sym)) {
+      onChange({ ...config, market_indices: [...selected, sym] })
+    }
+    setCustomInput('')
+  }
+
+  return (
+    <div className="space-y-1.5 min-w-0">
+      <label className="text-[10px] text-[var(--color-text-dim)] uppercase tracking-wider">
+        Market Index Overlay {selected.length > 0 ? `(${selected.length})` : '(auto)'}
+      </label>
+      <div className="flex flex-wrap gap-1 min-w-0">
+        {COMMON_INDICES.map((idx) => (
+          <button
+            key={idx.symbol}
+            onClick={() => toggle(idx.symbol)}
+            className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+              selected.includes(idx.symbol)
+                ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent)]/10'
+                : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]'
+            }`}
+          >
+            {idx.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-1">
+        <input
+          value={customInput}
+          onChange={(e) => setCustomInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && addCustom()}
+          placeholder="Custom symbol..."
+          className="px-2 py-1 text-[10px] rounded bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text)] outline-none flex-1 mono"
+        />
+        <button
+          onClick={addCustom}
+          className="px-2 py-1 text-[10px] bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+        >+</button>
+      </div>
+      {selected.length > 0 && (
+        <button
+          onClick={() => onChange({ ...config, market_indices: [] })}
+          className="text-[10px] text-[var(--color-text-dim)] hover:text-[var(--color-error)]"
+        >Reset to auto</button>
+      )}
+    </div>
+  )
+}
+
 // Preset stock counts (keep in sync with backend presets.py)
 const PRESET_COUNTS: Record<string, number> = {
-  jp_topix_demo: 10, jp_nikkei225: 15, us_sp500_mega: 10,
-  us_sp500_tech: 12, global_diversified: 10,
+  jp_topix_demo: 10, jp_nikkei225_30: 30, jp_nikkei225_100: 100,
+  us_sp500_mega: 10, us_sp500_tech: 12, global_diversified: 10,
 }
 
 function UniverseEditor({ config, onChange }: { config: OptimizeConfig; onChange: (c: OptimizeConfig) => void }) {
@@ -267,7 +383,7 @@ function UniverseEditor({ config, onChange }: { config: OptimizeConfig; onChange
             {config.custom_tickers.length > 0 && ' (custom)'}
           </div>
         </div>
-        <span className="text-[var(--color-text-dim)] text-xs">{expanded ? '▾' : '▸'}</span>
+        <span className="text-[var(--color-text-dim)] text-sm">{expanded ? '▾' : '▸'}</span>
       </button>
 
       {/* Preview chips when collapsed */}

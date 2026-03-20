@@ -34,7 +34,7 @@ PRESETS = {
         "index_id": "nikkei225",
         "target_holdings": 30,
         "weighting": "price_weighted",
-        "universe": "dynamic",  # Resolved from constituents + yfinance prices
+        "universe": "dynamic",
         "initial_investment": 100_000_000,
         "currency": "JPY",
         "tax_rate": 0.20315,
@@ -47,6 +47,26 @@ PRESETS = {
             "max_turnover": 0.15,
             "cash_buffer": 1_000_000,
             "max_weight": 0.15,
+        },
+    },
+    "jp_nikkei225_100": {
+        "label": "Nikkei 225 (100 stocks)",
+        "index_id": "nikkei225",
+        "target_holdings": 100,
+        "weighting": "price_weighted",
+        "universe": "dynamic",
+        "initial_investment": 100_000_000,
+        "currency": "JPY",
+        "tax_rate": 0.20315,
+        "objective": {
+            "tracking_error": 200.0,
+            "transaction_cost": 0.0,
+            "tax_cost": 400.0,
+        },
+        "constraints": {
+            "max_turnover": 0.10,
+            "cash_buffer": 5_000_000,
+            "max_weight": 0.05,
         },
     },
     "us_sp500_mega": {

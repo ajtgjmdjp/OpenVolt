@@ -28,23 +28,114 @@ except ImportError:
     HAS_YFINANCE = False
 
 
+def prefetch_market_data(preset: dict, period: str = "1y") -> dict:
+    """Fetch and cache market data for reuse across multiple optimization runs."""
+    universe = preset["universe"]
+
+    if universe == "dynamic":
+        from .benchmark_service import resolve_benchmark
+        index_id = preset.get("index_id")
+        target = preset.get("target_holdings", 0)
+        resolved = resolve_benchmark(index_id=index_id, target_holdings=target, period=period)
+        tickers = resolved["tickers"]
+        bench_w = np.array(resolved["weights"], dtype=float)
+        names_lookup = resolved.get("names", {})
+        universe_dict = {t: {"name": names_lookup.get(t, t), "bench_w": float(bench_w[i])} for i, t in enumerate(tickers)}
+    else:
+        tickers = list(universe.keys())
+        bench_w = np.array([universe[t]["bench_w"] for t in tickers], dtype=float)
+        universe_dict = universe
+
+    import pandas as pd
+    data = yf.download(tickers, period=period, auto_adjust=True, progress=False)
+    if isinstance(data.columns, pd.MultiIndex):
+        close = data["Close"]
+    else:
+        close = data[["Close"]].rename(columns={"Close": tickers[0]}) if len(tickers) == 1 else data["Close"]
+
+    available = [t for t in tickers if t in close.columns and close[t].notna().sum() > 30]
+    close = close[available].ffill().dropna()
+    if len(available) < len(tickers):
+        idx_map = {t: i for i, t in enumerate(tickers)}
+        raw_w = np.array([bench_w[idx_map[t]] for t in available])
+        bench_w = raw_w / raw_w.sum()
+        tickers = available
+        universe_dict = {t: universe_dict.get(t, {"name": t, "bench_w": float(bench_w[i])}) if isinstance(universe_dict, dict) else {"name": t, "bench_w": float(bench_w[i])} for i, t in enumerate(tickers)}
+
+    half_idx = len(close) // 2
+
+    return {
+        "tickers": tickers,
+        "latest_prices": close.iloc[-1].values.astype(float),
+        "as_of": str(close.index[-1].date()),
+        "cov_annual": close.pct_change().dropna().cov().values * 252,
+        "prices_then": close.iloc[half_idx].values.astype(float),
+        "half_year_ago": close.index[half_idx],
+        "bench_w": bench_w,
+        "universe": universe_dict,
+    }
+
+
 def run_optimization(preset: dict, risk_model_name: str = "sample",
                      disposal_method: str = "specific_id",
-                     period: str = "1y") -> dict:
+                     period: str = "1y",
+                     cached_market_data: dict | None = None) -> dict:
     """Run a full optimization pipeline and return structured results."""
 
     if not HAS_ENGINE:
         raise RuntimeError("OpenVolt C++ engine not available. Build with: cmake --build build")
 
     universe = preset["universe"]
-    tickers = list(universe.keys())
+
+    if universe == "dynamic":
+        from .benchmark_service import resolve_benchmark
+        index_id = preset.get("index_id")
+        target = preset.get("target_holdings", 0)
+        resolved = resolve_benchmark(index_id=index_id, target_holdings=target, period=period)
+        tickers = resolved["tickers"]
+        bench_w_resolved = np.array(resolved["weights"], dtype=float)
+        # Build name lookup for formatting results
+        names_lookup = resolved.get("names", {})
+        universe = {t: {"name": names_lookup.get(t, t), "bench_w": float(bench_w_resolved[i])} for i, t in enumerate(tickers)}
+    else:
+        tickers = list(universe.keys())
+        bench_w_resolved = None  # Will use universe["bench_w"] later
+
     N = len(tickers)
 
-    # --- Stage 1: Fetch prices ---
+    # --- Stage 1: Fetch prices (or use cached data) ---
     t0 = time.perf_counter()
-    if HAS_YFINANCE:
+    if cached_market_data is not None:
+        # Reuse pre-fetched data (sweep/MC optimization)
+        tickers = cached_market_data["tickers"]
+        N = len(tickers)
+        latest_prices = cached_market_data["latest_prices"]
+        as_of = cached_market_data["as_of"]
+        cov_annual = cached_market_data["cov_annual"]
+        prices_then = cached_market_data["prices_then"]
+        half_year_ago = cached_market_data["half_year_ago"]
+        if bench_w_resolved is not None and len(bench_w_resolved) != N:
+            bench_w_resolved = cached_market_data.get("bench_w")
+        if bench_w_resolved is None:
+            bench_w_resolved = cached_market_data.get("bench_w")
+        universe = cached_market_data.get("universe", universe)
+    elif HAS_YFINANCE:
+        import pandas as pd
         data = yf.download(tickers, period=period, auto_adjust=True, progress=False)
-        close = data["Close"][tickers].dropna()
+        if isinstance(data.columns, pd.MultiIndex):
+            close = data["Close"]
+        else:
+            close = data[["Close"]].rename(columns={"Close": tickers[0]}) if N == 1 else data["Close"]
+        # Keep tickers with sufficient data
+        available = [t for t in tickers if t in close.columns and close[t].notna().sum() > 30]
+        close = close[available].ffill().dropna()
+        if len(available) < N and bench_w_resolved is not None:
+            idx_map = {t: i for i, t in enumerate(tickers)}
+            raw_w = np.array([bench_w_resolved[idx_map[t]] for t in available])
+            bench_w_resolved = raw_w / raw_w.sum()
+            tickers = available
+            N = len(tickers)
+
         latest_prices = close.iloc[-1].values.astype(float)
         as_of = str(close.index[-1].date())
 
@@ -66,9 +157,15 @@ def run_optimization(preset: dict, risk_model_name: str = "sample",
 
     fetch_ms = int((time.perf_counter() - t0) * 1000)
 
+    # Precompute ticker → index map
+    ticker_idx = {t: i for i, t in enumerate(tickers)}
+
     # --- Stage 2: Build portfolio ---
     initial_investment = preset.get("initial_investment", 100_000_000)
-    bench_w_static = np.array([universe[t]["bench_w"] for t in tickers], dtype=float)
+    if bench_w_resolved is not None:
+        bench_w_static = bench_w_resolved
+    else:
+        bench_w_static = np.array([universe[t]["bench_w"] for t in tickers], dtype=float)
 
     lots = []
     cash_used = 0.0
@@ -91,13 +188,13 @@ def run_optimization(preset: dict, risk_model_name: str = "sample",
     # Total value
     total_value = remaining_cash
     for lot in lots:
-        idx = tickers.index(lot.asset_id)
+        idx = ticker_idx[lot.asset_id]
         total_value += lot.shares * latest_prices[idx]
 
     # Current weights
     current_w = {}
     for lot in lots:
-        idx = tickers.index(lot.asset_id)
+        idx = ticker_idx[lot.asset_id]
         current_w[lot.asset_id] = lot.shares * latest_prices[idx] / total_value
 
     # --- Stage 3: Risk model ---
@@ -194,8 +291,8 @@ def run_optimization(preset: dict, risk_model_name: str = "sample",
             "as_of": as_of,
         },
         "data_range": {
-            "start": str(close.index[0].date()) if HAS_YFINANCE else "N/A",
+            "start": str(half_year_ago.date()) if hasattr(half_year_ago, 'date') else str(half_year_ago),
             "end": as_of,
-            "trading_days": len(close) if HAS_YFINANCE else 0,
+            "trading_days": N,
         },
     }

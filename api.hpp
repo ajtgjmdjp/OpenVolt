@@ -149,6 +149,7 @@ struct OptimizationConfig {
     ObjectiveWeights objective;
     double min_trade_notional{0.0};
     bool round_to_whole_shares{false};
+    std::string solver{"osqp"};  // "osqp" or "scs"
 };
 
 // ---------------------------------------------------------------------------

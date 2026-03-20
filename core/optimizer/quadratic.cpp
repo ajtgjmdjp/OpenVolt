@@ -79,7 +79,7 @@ OptimizationResult OSQPOptimizer::solve(
     // -----------------------------------------------------------------------
     // Build q vector (linear objective)
     // q_w = -2 * lambda_te * Cov * w_b
-    // q_t = lambda_tcost + lambda_tax * max(0, gain_pct)
+    // q_t = (lambda_tcost + per_asset_tcost) + lambda_tax * max(0, gain) * tax_rate
     // -----------------------------------------------------------------------
     Vector q(n_vars);
     q.head(N) = -2.0 * params.lambda_te * cov * benchmark_weights;
@@ -88,22 +88,25 @@ OptimizationResult OSQPOptimizer::solve(
         if (unrealized_gains(i) > 0.0) {
             gain_penalty = params.lambda_tax * unrealized_gains(i) * params.tax_rate;
         }
-        q(N + i) = params.lambda_tcost + gain_penalty;
+        double per_asset_tcost = (params.tcost_frac.size() > i) ? params.tcost_frac(i) : 0.0;
+        q(N + i) = params.lambda_tcost + per_asset_tcost + gain_penalty;
     }
 
     // -----------------------------------------------------------------------
     // Build A matrix and bounds (constraints)
     //
-    // Row 0:          sum(w) = 1
-    // Rows 1..N:      0 <= w_i <= weight_cap
-    // Rows N+1..2N:   w_i - w_c_i - t_i <= 0
-    // Rows 2N+1..3N:  -(w_i - w_c_i) - t_i <= 0
+    // Row 0:          sum(w) = invest_fraction
+    // Rows 1..N:      lb <= w_i <= ub  (per-asset bounds + no_buy/no_sell)
+    // Rows N+1..2N:   w_i - t_i <= w_c_i
+    // Rows 2N+1..3N:  -w_i - t_i <= -w_c_i
     // Rows 3N+1..4N:  t_i >= 0
+    // Row 4N+1:       sum(t)/2 <= turnover_cap (optional)
     // -----------------------------------------------------------------------
-    const int n_constraints = 1 + N + 2 * N + N;
+    const bool has_turnover = params.turnover_cap < 1.0;
+    const int n_constraints = 1 + N + 2 * N + N + (has_turnover ? 1 : 0);
     std::vector<Eigen::Triplet<double>> A_triplets;
 
-    // Row 0: sum(w) = 1
+    // Row 0: sum(w) = invest_fraction
     for (int i = 0; i < N; ++i) {
         A_triplets.emplace_back(0, i, 1.0);
     }
@@ -113,21 +116,28 @@ OptimizationResult OSQPOptimizer::solve(
         A_triplets.emplace_back(1 + i, i, 1.0);
     }
 
-    // Rows N+1..2N: w_i - w_c_i <= t_i  =>  w_i - t_i <= w_c_i
+    // Rows N+1..2N: w_i - t_i <= w_c_i
     for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + N + i, i, 1.0);       // w_i
-        A_triplets.emplace_back(1 + N + i, N + i, -1.0);  // -t_i
+        A_triplets.emplace_back(1 + N + i, i, 1.0);
+        A_triplets.emplace_back(1 + N + i, N + i, -1.0);
     }
 
-    // Rows 2N+1..3N: -(w_i - w_c_i) <= t_i  =>  -w_i - t_i <= -w_c_i
+    // Rows 2N+1..3N: -w_i - t_i <= -w_c_i
     for (int i = 0; i < N; ++i) {
-        A_triplets.emplace_back(1 + 2 * N + i, i, -1.0);      // -w_i
-        A_triplets.emplace_back(1 + 2 * N + i, N + i, -1.0);  // -t_i
+        A_triplets.emplace_back(1 + 2 * N + i, i, -1.0);
+        A_triplets.emplace_back(1 + 2 * N + i, N + i, -1.0);
     }
 
     // Rows 3N+1..4N: t_i >= 0
     for (int i = 0; i < N; ++i) {
         A_triplets.emplace_back(1 + 3 * N + i, N + i, 1.0);
+    }
+
+    // Optional turnover constraint: sum(t)/2 <= turnover_cap
+    if (has_turnover) {
+        for (int i = 0; i < N; ++i) {
+            A_triplets.emplace_back(1 + 4 * N, N + i, 0.5);
+        }
     }
 
     Eigen::SparseMatrix<double, Eigen::ColMajor, OSQPInt> A_eigen(n_constraints, n_vars);
@@ -137,14 +147,28 @@ OptimizationResult OSQPOptimizer::solve(
     // Bounds
     Vector l(n_constraints), u(n_constraints);
 
-    // Row 0: sum(w) = 1
-    l(0) = 1.0;
-    u(0) = 1.0;
+    // Row 0: sum(w) = invest_fraction
+    l(0) = params.invest_fraction;
+    u(0) = params.invest_fraction;
 
-    // Rows 1..N: 0 <= w_i <= weight_cap
+    // Rows 1..N: per-asset weight bounds with no_buy/no_sell overrides
     for (int i = 0; i < N; ++i) {
-        l(1 + i) = 0.0;
-        u(1 + i) = params.weight_cap;
+        double lb = 0.0;
+        double ub = params.weight_cap;
+
+        auto it = params.per_asset_bounds.find(i);
+        if (it != params.per_asset_bounds.end()) {
+            lb = it->second.lo;
+            ub = it->second.hi;
+        }
+        if (params.no_buy.count(i)) {
+            ub = std::min(ub, current_weights(i));
+        }
+        if (params.no_sell.count(i)) {
+            lb = std::max(lb, current_weights(i));
+        }
+        l(1 + i) = lb;
+        u(1 + i) = ub;
     }
 
     // Rows N+1..2N: w_i - t_i <= w_c_i
@@ -163,6 +187,12 @@ OptimizationResult OSQPOptimizer::solve(
     for (int i = 0; i < N; ++i) {
         l(1 + 3 * N + i) = 0.0;
         u(1 + 3 * N + i) = 1e30;
+    }
+
+    // Turnover constraint bounds
+    if (has_turnover) {
+        l(1 + 4 * N) = -1e30;
+        u(1 + 4 * N) = params.turnover_cap;
     }
 
     // -----------------------------------------------------------------------
@@ -243,8 +273,27 @@ OptimizationResult OSQPOptimizer::solve(
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
-std::unique_ptr<Optimizer> make_optimizer() {
-    return std::make_unique<OSQPOptimizer>();
+
+#ifdef OPENVOLT_HAS_SCS
+std::unique_ptr<Optimizer> make_scs_optimizer();
+#endif
+
+std::unique_ptr<Optimizer> make_optimizer(const std::string& name) {
+    if (name == "osqp" || name.empty()) {
+        return std::make_unique<OSQPOptimizer>();
+    }
+#ifdef OPENVOLT_HAS_SCS
+    if (name == "scs") {
+        return make_scs_optimizer();
+    }
+#endif
+    throw std::invalid_argument("Unknown solver: " + name + ". Available: osqp" +
+#ifdef OPENVOLT_HAS_SCS
+        ", scs"
+#else
+        ""
+#endif
+    );
 }
 
 } // namespace openvolt

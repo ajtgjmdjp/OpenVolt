@@ -40,7 +40,7 @@ async def get_experiment(job_id: str):
 
 async def _run_sweep(job_id: str, req: SweepRequest):
     try:
-        from ..services.openvolt_service import run_optimization
+        from ..services.openvolt_service import run_optimization, prefetch_market_data
         from ..data.presets import PRESETS
 
         preset = PRESETS.get(req.preset_id)
@@ -50,6 +50,9 @@ async def _run_sweep(job_id: str, req: SweepRequest):
             return
 
         loop = asyncio.get_event_loop()
+
+        # Pre-fetch market data once for all sweep points
+        cached_data = await loop.run_in_executor(None, prefetch_market_data, preset, "1y")
 
         for i, value in enumerate(req.sweep_values):
             # Override the swept parameter in the preset
@@ -73,29 +76,57 @@ async def _run_sweep(job_id: str, req: SweepRequest):
                     obj["tax_cost"] = req.objective.tax_cost
 
             result = await loop.run_in_executor(
-                None, run_optimization, modified_preset, req.risk_model, "specific_id"
+                None, run_optimization, modified_preset, req.risk_model, "specific_id", "1y", cached_data
             )
+
+            # Build full config for this run (everything needed to reproduce as backtest)
+            base_obj = req.objective.model_dump() if req.objective else {}
+            run_config = {
+                "preset_id": req.preset_id,
+                "risk_model": req.risk_model,
+                "period": req.period,
+                "rebalance_frequency": req.rebalance_frequency,
+                "lambda_te": obj.get("tracking_error", base_obj.get("tracking_error", 200)),
+                "lambda_tcost": obj.get("transaction_cost", base_obj.get("transaction_cost", 0)),
+                "lambda_tax": obj.get("tax_cost", base_obj.get("tax_cost", 400)),
+            }
 
             run_entry = {
                 "index": i,
                 "label": f"{req.sweep_param}={value}",
                 "param_value": value,
                 "summary": result["summary"],
+                "config": run_config,
             }
             _results[job_id]["runs"].append(run_entry)
             _results[job_id]["completed"] = i + 1
 
         _results[job_id]["status"] = "completed"
 
-        # Save to workspace
+        # Save to workspace with full reproducible config
         try:
             import json as _json
             from ..services.workspace.store import WorkspaceStore
             ws = WorkspaceStore("workspace")
+
+            base_obj_dict = req.objective.model_dump() if req.objective else {}
+            full_config = {
+                "mode": "sweep",
+                "sweep_param": req.sweep_param,
+                "values": req.sweep_values,
+                "preset_id": req.preset_id,
+                "risk_model": req.risk_model,
+                "period": req.period,
+                "rebalance_frequency": req.rebalance_frequency,
+                "lambda_te": base_obj_dict.get("tracking_error", 200),
+                "lambda_tcost": base_obj_dict.get("transaction_cost", 0),
+                "lambda_tax": base_obj_dict.get("tax_cost", 400),
+            }
+
             ws.save_item(
                 id=job_id, kind="experiment",
-                title=f"Sweep {req.sweep_param} ({len(req.sweep_values)} runs)",
-                config={"sweep_param": req.sweep_param, "values": req.sweep_values},
+                title=f"Sweep {req.sweep_param} ({len(req.sweep_values)} runs, {req.preset_id})",
+                config=full_config,
                 summary={"total_runs": len(req.sweep_values)},
                 artifacts={"runs.json": _json.dumps(_results[job_id]["runs"], indent=2)},
             )
@@ -110,7 +141,7 @@ async def _run_sweep(job_id: str, req: SweepRequest):
 async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
     try:
         import numpy as np
-        from ..services.openvolt_service import run_optimization
+        from ..services.openvolt_service import run_optimization, prefetch_market_data
         from ..data.presets import PRESETS
 
         preset = PRESETS.get(req.preset_id)
@@ -120,6 +151,9 @@ async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
 
         loop = asyncio.get_event_loop()
         rng = np.random.default_rng(42)
+
+        # Pre-fetch market data once
+        cached_data = await loop.run_in_executor(None, prefetch_market_data, preset, "1y")
 
         for i in range(req.n_simulations):
             modified_preset = {**preset}
@@ -131,7 +165,7 @@ async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
             modified_preset["objective"] = obj
 
             result = await loop.run_in_executor(
-                None, run_optimization, modified_preset, req.risk_model, "specific_id"
+                None, run_optimization, modified_preset, req.risk_model, "specific_id", "1y", cached_data
             )
 
             run_entry = {
@@ -139,6 +173,15 @@ async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
                 "label": f"sim_{i+1}",
                 "params": {
                     "lambda_te": obj["tracking_error"],
+                    "lambda_tax": obj["tax_cost"],
+                },
+                "config": {
+                    "preset_id": req.preset_id,
+                    "risk_model": req.risk_model,
+                    "period": req.period,
+                    "rebalance_frequency": req.rebalance_frequency,
+                    "lambda_te": obj["tracking_error"],
+                    "lambda_tcost": 0,
                     "lambda_tax": obj["tax_cost"],
                 },
                 "summary": result["summary"],
@@ -174,6 +217,29 @@ async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
         }
 
         _results[job_id]["status"] = "completed"
+
+        # Save to workspace
+        try:
+            import json as _json
+            from ..services.workspace.store import WorkspaceStore
+            ws = WorkspaceStore("workspace")
+            ws.save_item(
+                id=job_id, kind="experiment",
+                title=f"Monte Carlo ({req.n_simulations} sims, {req.preset_id})",
+                config={"mode": "montecarlo", "n_simulations": req.n_simulations,
+                         "preset_id": req.preset_id, "risk_model": req.risk_model,
+                         "period": req.period, "rebalance_frequency": req.rebalance_frequency,
+                         "lambda_te_range": req.lambda_te_range,
+                         "lambda_tax_range": req.lambda_tax_range},
+                summary={"total_runs": req.n_simulations,
+                          **{k: v for k, v in _results[job_id].get("aggregate", {}).items()}},
+                artifacts={
+                    "runs.json": _json.dumps(_results[job_id]["runs"], indent=2),
+                    "aggregate.json": _json.dumps(_results[job_id].get("aggregate", {}), indent=2),
+                },
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         _results[job_id]["status"] = "failed"

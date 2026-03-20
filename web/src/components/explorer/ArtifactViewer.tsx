@@ -229,24 +229,24 @@ export function ArtifactViewer({ itemId, filePath }: Props) {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        {content.type === 'json' && filePath?.endsWith('summary.json') && content.parsed && typeof content.parsed === 'object' && (
+        {content.type === 'json' && filePath?.endsWith('summary.json') && content.parsed && typeof content.parsed === 'object' ? (
           <SummaryCards data={content.parsed as Record<string, unknown>} />
-        )}
-        {content.type === 'json' && filePath?.endsWith('config.json') && content.parsed && typeof content.parsed === 'object' && (
+        ) : null}
+        {content.type === 'json' && filePath?.endsWith('config.json') && content.parsed && typeof content.parsed === 'object' ? (
           <ConfigCards data={content.parsed as Record<string, unknown>} />
-        )}
-        {content.type === 'json' && !filePath?.endsWith('summary.json') && !filePath?.endsWith('config.json') && (
+        ) : null}
+        {content.type === 'json' && !filePath?.endsWith('summary.json') && !filePath?.endsWith('config.json') ? (
           <div className="text-xs mono leading-relaxed">
             <JsonView data={content.parsed} />
           </div>
-        )}
+        ) : null}
 
-        {content.type === 'csv' && content.parsed && (
+        {content.type === 'csv' && content.parsed ? (
           <CsvTable
             headers={(content.parsed as { headers: string[]; rows: string[][] }).headers}
             rows={(content.parsed as { headers: string[]; rows: string[][] }).rows}
           />
-        )}
+        ) : null}
 
         {content.type === 'text' && (
           <pre className="text-xs mono text-[var(--color-text)] whitespace-pre-wrap">{content.raw}</pre>

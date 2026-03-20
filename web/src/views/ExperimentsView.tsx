@@ -4,6 +4,8 @@ import {
   CartesianGrid, Cell,
 } from 'recharts'
 import { formatMoney, formatPct } from '../lib/format'
+import { ConfigPanel } from '../components/config/ConfigPanel'
+import { useAppStore } from '../store/useAppStore'
 
 type RunEntry = {
   index: number
@@ -32,10 +34,34 @@ type ExperimentResult = {
 type Mode = 'sweep' | 'montecarlo'
 
 export function ExperimentsView() {
+  const config = useAppStore((s) => s.config)
+  const setConfig = useAppStore((s) => s.setConfig)
+  const [showConfig, setShowConfig] = useState(false)
+
   const [mode, setMode] = useState<Mode>('sweep')
   const [result, setResult] = useState<ExperimentResult | null>(null)
   const [status, setStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
   const [selected, setSelected] = useState<RunEntry | null>(null)
+
+  const [saving, setSaving] = useState<number | null>(null)
+
+  const saveRunToWorkspace = async (run: RunEntry) => {
+    setSaving(run.index)
+    try {
+      await fetch('/api/workspace/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: `${mode}_run_${run.index}_${Date.now()}`,
+          kind: 'run',
+          title: `${config.preset_id} · ${run.label}`,
+          config: { preset_id: config.preset_id, risk_model: config.risk_model, ...(run.params || {}) },
+          summary: run.summary,
+        }),
+      })
+    } catch { /* ignore */ }
+    setSaving(null)
+  }
 
   // Sweep params
   const [sweepParam, setSweepParam] = useState('lambda_te')
@@ -56,17 +82,31 @@ export function ExperimentsView() {
       if (mode === 'sweep') {
         endpoint = '/api/experiments/sweep'
         body = {
-          preset_id: 'jp_topix_demo',
+          preset_id: config.preset_id,
           sweep_param: sweepParam,
           sweep_values: sweepValues.split(',').map(Number),
-          risk_model: 'sample',
+          risk_model: config.risk_model,
+          period: config.period,
+          rebalance_frequency: config.rebalance_frequency,
+          objective: {
+            tracking_error: config.lambda_te,
+            transaction_cost: config.lambda_tcost,
+            tax_cost: config.lambda_tax,
+          },
         }
       } else {
         endpoint = '/api/experiments/montecarlo'
         body = {
-          preset_id: 'jp_topix_demo',
+          preset_id: config.preset_id,
           n_simulations: nSims,
-          risk_model: 'sample',
+          risk_model: config.risk_model,
+          period: config.period,
+          rebalance_frequency: config.rebalance_frequency,
+          objective: {
+            tracking_error: config.lambda_te,
+            transaction_cost: config.lambda_tcost,
+            tax_cost: config.lambda_tax,
+          },
         }
       }
 
@@ -96,7 +136,7 @@ export function ExperimentsView() {
     } catch (e) {
       setStatus('failed')
     }
-  }, [mode, sweepParam, sweepValues, nSims])
+  }, [mode, sweepParam, sweepValues, nSims, config])
 
   const runs = result?.runs || []
 
@@ -112,6 +152,17 @@ export function ExperimentsView() {
     <div className="flex flex-col h-full bg-[var(--color-bg)]">
       <div className="flex items-center justify-between px-4 h-10 border-b border-[var(--color-border)] shrink-0">
         <div className="flex items-center gap-3">
+            <span className="text-xs text-[var(--color-text-dim)] mono">
+              {config.preset_id} · {config.risk_model}
+            </span>
+            <button
+              onClick={() => setShowConfig(!showConfig)}
+              className={`px-3 py-1 text-xs rounded border transition-colors ${
+                showConfig
+                  ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+                  : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]'
+              }`}
+            >⚙ Settings</button>
             {/* Mode toggle */}
             <div className="flex bg-[var(--color-surface-2)] rounded overflow-hidden">
               <button
@@ -173,6 +224,16 @@ export function ExperimentsView() {
           </div>
       </div>
 
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Config sidebar */}
+        {showConfig && (
+          <div className="w-72 border-r border-[var(--color-border)] overflow-y-auto overflow-x-hidden shrink-0 bg-[var(--color-surface)]">
+            <ConfigPanel config={config} onChange={setConfig} />
+          </div>
+        )}
+
+        <div className="flex-1 flex flex-col overflow-hidden">
+
       {status === 'idle' && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -222,8 +283,11 @@ export function ExperimentsView() {
                 <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1a1a26" />
                   <XAxis dataKey="x" name="TE (%)" tick={{ fill: '#8888a0', fontSize: 10 }}
+                    type="number" domain={['auto', 'auto']}
+                    tickFormatter={(v: number) => `${v.toFixed(1)}%`}
                     label={{ value: 'Tracking Error (%)', position: 'bottom', fill: '#8888a0', fontSize: 11 }} />
-                  <YAxis dataKey="y" name="Tax Cost" tick={{ fill: '#8888a0', fontSize: 10 }} />
+                  <YAxis dataKey="y" name="Tax Cost" tick={{ fill: '#8888a0', fontSize: 10 }}
+                    tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : `${v.toFixed(0)}`} />
                   <Tooltip
                     contentStyle={{ background: '#12121a', border: '1px solid #2a2a3a', borderRadius: 6, fontSize: 12 }}
                     formatter={(value: unknown, name: unknown) => [
@@ -256,6 +320,7 @@ export function ExperimentsView() {
                     <th className="text-right">Tax Cost</th>
                     <th className="text-right">Trades</th>
                     <th className="text-right">Converged</th>
+                    <th className="text-right"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -273,6 +338,14 @@ export function ExperimentsView() {
                       <td className="text-right">{formatMoney(r.summary.estimated_tax_cost)}</td>
                       <td className="text-right">{r.summary.trade_count}</td>
                       <td className="text-right">{r.summary.converged ? '✓' : '✗'}</td>
+                      <td className="text-right">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); saveRunToWorkspace(r) }}
+                          disabled={saving === r.index}
+                          className="text-[10px] text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-1"
+                          title="Save to workspace for comparison"
+                        >{saving === r.index ? '...' : '💾'}</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -306,6 +379,13 @@ export function ExperimentsView() {
                     <div className="mono text-sm">{selected.summary.trade_count}</div>
                   </div>
                 </div>
+                <button
+                  onClick={() => saveRunToWorkspace(selected)}
+                  disabled={saving === selected.index}
+                  className="w-full px-3 py-1.5 text-xs rounded bg-[var(--color-accent)] text-black font-medium hover:brightness-110 disabled:opacity-50"
+                >
+                  {saving === selected.index ? 'Saving...' : '💾 Save to Compare'}
+                </button>
                 {selected.params && (
                   <div>
                     <span className="text-xs text-[var(--color-text-dim)] uppercase tracking-wider">Parameters</span>
@@ -329,6 +409,9 @@ export function ExperimentsView() {
           </div>
         </div>
       )}
+
+        </div>{/* end flex-1 flex-col */}
+      </div>{/* end flex min-h-0 */}
     </div>
   )
 }

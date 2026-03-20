@@ -14,8 +14,22 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Eigen3 REQUIRED)
 find_package(osqp REQUIRED)
 
+# SCS (optional — enable if found)
+option(OPENVOLT_WITH_SCS "Build with SCS solver" ON)
+if(OPENVOLT_WITH_SCS)
+    find_library(SCS_LIB NAMES scsdir PATHS /opt/homebrew/lib /usr/local/lib /usr/lib)
+    find_path(SCS_INCLUDE scs/scs.h PATHS /opt/homebrew/include /usr/local/include /usr/include)
+    if(SCS_LIB AND SCS_INCLUDE)
+        message(STATUS "SCS found: ${SCS_LIB}")
+        set(HAS_SCS TRUE)
+    else()
+        message(STATUS "SCS not found — building without SCS solver")
+        set(HAS_SCS FALSE)
+    endif()
+endif()
+
 # Core library
-add_library(openvolt_core STATIC
+set(CORE_SOURCES
     core/models/position.cpp
     core/models/trade.cpp
     core/risk/covariance.cpp
@@ -28,8 +42,19 @@ add_library(openvolt_core STATIC
     workflows/direct_index.cpp
     api.cpp
 )
+if(HAS_SCS)
+    list(APPEND CORE_SOURCES core/optimizer/scs_solver.cpp)
+endif()
+
+add_library(openvolt_core STATIC ${CORE_SOURCES})
 target_include_directories(openvolt_core PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(openvolt_core PUBLIC Eigen3::Eigen osqp::osqp)
+
+if(HAS_SCS)
+    target_include_directories(openvolt_core PUBLIC ${SCS_INCLUDE})
+    target_link_libraries(openvolt_core PUBLIC ${SCS_LIB})
+    target_compile_definitions(openvolt_core PUBLIC OPENVOLT_HAS_SCS=1)
+endif()
 
 # Python bindings
 option(OPENVOLT_BUILD_PYTHON "Build Python bindings" OFF)

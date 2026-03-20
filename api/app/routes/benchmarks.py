@@ -52,3 +52,49 @@ async def resolve_benchmark(req: ResolveBenchmarkRequest):
         return result
     except Exception as e:
         raise HTTPException(400, str(e))
+
+
+class IndexSeriesRequest(BaseModel):
+    symbols: list[str]  # e.g. ['^N225', '^GSPC']
+    period: str = "1y"
+
+
+@router.post("/benchmarks/index-series")
+async def get_index_series(req: IndexSeriesRequest):
+    """Fetch normalized price series for one or more market indices.
+
+    Independent of backtest execution — can be called anytime to overlay indices.
+    """
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _fetch_index_series, req.symbols, req.period)
+    return {"indices": result}
+
+
+def _fetch_index_series(symbols: list[str], period: str) -> list[dict]:
+    """Fetch and normalize index price series from yfinance."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return []
+
+    results = []
+    for sym in symbols:
+        try:
+            data = yf.download(sym, period=period, progress=False)
+            if data.empty:
+                continue
+            close = data["Close"]
+            first = float(close.iloc[0].item() if hasattr(close.iloc[0], 'item') else close.iloc[0])
+            series = []
+            for i in range(len(close)):
+                val = float(close.iloc[i].item() if hasattr(close.iloc[i], 'item') else close.iloc[i])
+                series.append({
+                    "date": str(close.index[i].date()),
+                    "value": round(val / first * 100, 2),
+                })
+            results.append({"symbol": sym, "series": series})
+        except Exception:
+            pass
+    return results

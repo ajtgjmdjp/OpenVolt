@@ -71,6 +71,7 @@ type AppState = {
   // Saved backtests for cross-view reuse
   savedBacktests: Array<{ id: string; label: string; config: OptimizeConfig; result: BacktestData; timestamp: number }>
   saveBacktest: (bt: { id: string; label: string; config: OptimizeConfig; result: BacktestData }) => void
+  removeBacktest: (id: string) => void
 
   // Experiments view state (preserved across nav)
   experimentResult: ExperimentData | null
@@ -86,8 +87,10 @@ type AppState = {
   toggleChart: (chart: string) => void
 }
 
+type PersistedAppState = Pick<AppState, 'config' | 'backtestConfig' | 'visibleCharts' | 'experimentMode'>
+
 export const useAppStore = create<AppState>()(
-  persist(
+  persist<AppState, [], [], PersistedAppState>(
     (set) => ({
   // Config
   config: DEFAULT_CONFIG,
@@ -124,6 +127,9 @@ export const useAppStore = create<AppState>()(
   saveBacktest: (bt) => set((s) => ({
     savedBacktests: [...s.savedBacktests, { ...bt, timestamp: Date.now() }],
   })),
+  removeBacktest: (id) => set((s) => ({
+    savedBacktests: s.savedBacktests.filter((b) => b.id !== id),
+  })),
 
   // Experiments
   experimentResult: null,
@@ -132,7 +138,7 @@ export const useAppStore = create<AppState>()(
   setExperimentState: (state) => set(state),
 
   // Dashboard charts
-  visibleCharts: ['Drawdown', 'Rolling TE'],
+  visibleCharts: ['Rolling TE', 'Net Realized P&L', 'Annual P&L'],
   setVisibleCharts: (charts) => set({ visibleCharts: charts }),
   toggleChart: (chart) => set((s) => ({
     visibleCharts: s.visibleCharts.includes(chart)
@@ -142,6 +148,7 @@ export const useAppStore = create<AppState>()(
 }),
     {
       name: 'openvolt-store',
+      version: 2, // Bump to reset stale defaults (v1→v2: chart defaults changed)
       storage: {
         getItem: (name) => {
           const str = sessionStorage.getItem(name)
@@ -152,7 +159,6 @@ export const useAppStore = create<AppState>()(
         },
         removeItem: (name) => sessionStorage.removeItem(name),
       },
-      // Only persist lightweight state, not large data arrays
       partialize: (state) => ({
         config: state.config,
         backtestConfig: state.backtestConfig,

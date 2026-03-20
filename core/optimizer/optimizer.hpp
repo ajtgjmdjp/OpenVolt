@@ -3,9 +3,17 @@
 #include "core/models/types.hpp"
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace openvolt {
+
+/// Per-asset weight bounds.
+struct WeightBound {
+    double lo = 0.0;
+    double hi = 1.0;
+};
 
 /// Parameters for the portfolio optimization problem.
 struct OptimizationParams {
@@ -15,8 +23,18 @@ struct OptimizationParams {
     double lambda_tax   = 400.0;   // Tax (realized gains) penalty
 
     // Constraints
-    double weight_cap   = 0.05;    // Max weight per asset (5%)
+    double weight_cap   = 0.05;    // Default max weight per asset
     double turnover_cap = 1.0;     // Max one-way turnover (100%)
+    double invest_fraction = 1.0;  // sum(w) target (1.0 - cash_buffer_fraction)
+
+    // Per-asset overrides (index → bounds)
+    std::unordered_map<int, WeightBound> per_asset_bounds;
+    // No-buy / no-sell sets (asset indices)
+    std::unordered_set<int> no_buy;
+    std::unordered_set<int> no_sell;
+
+    // Per-asset transaction cost fractions (bps / 10000)
+    Vector tcost_frac;  // length N, or empty for uniform
 
     // Tax parameters
     double tax_rate     = 0.20315; // Japan: 20.315%
@@ -58,7 +76,8 @@ public:
     [[nodiscard]] virtual std::string name() const = 0;
 };
 
-/// Factory: create the default QP-based optimizer.
-[[nodiscard]] std::unique_ptr<Optimizer> make_optimizer();
+/// Factory: create an optimizer by name.
+/// @param name  "osqp" (default) or "scs"
+[[nodiscard]] std::unique_ptr<Optimizer> make_optimizer(const std::string& name = "osqp");
 
 } // namespace openvolt

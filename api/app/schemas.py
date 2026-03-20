@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class RunStatus(str, Enum):
@@ -65,8 +65,10 @@ class CreateBacktestRequest(BaseModel):
     preset_id: str = "jp_topix_demo"
     custom_tickers: Optional[list[str]] = None
     risk_model: str = "sample"
+    solver: str = "osqp"
     disposal_method: str = "specific_id"
     tax_jurisdiction: str = "japan"
+    market_indices: Optional[list[str]] = None  # e.g. ['^N225', '^GSPC']
     objective: Optional[ObjectiveConfig] = None
     constraints: Optional[ConstraintsConfig] = None
     period: str = "1y"
@@ -76,24 +78,31 @@ class CreateBacktestRequest(BaseModel):
 
 class MonteCarloRequest(BaseModel):
     preset_id: str = "jp_topix_demo"
-    n_simulations: int = 100
-    # Parameter perturbation ranges
+    n_simulations: int = Field(default=100, ge=1, le=500)
     lambda_te_range: list[float] = [100.0, 500.0]
     lambda_tax_range: list[float] = [200.0, 800.0]
-    return_noise_std: float = 0.02  # Add noise to historical returns
+    return_noise_std: float = 0.02
     risk_model: str = "sample"
     period: str = "1y"
+    rebalance_frequency: str = "weekly"
 
 
 class SweepRequest(BaseModel):
     preset_id: str = "jp_topix_demo"
-    sweep_param: str = "lambda_te"  # Which parameter to sweep
+    sweep_param: str = "lambda_te"
     sweep_values: list[float] = [50, 100, 150, 200, 300, 500, 800]
     risk_model: str = "sample"
     period: str = "1y"
-    # Fixed params for non-swept values
+    rebalance_frequency: str = "weekly"
     objective: Optional[ObjectiveConfig] = None
     constraints: Optional[ConstraintsConfig] = None
+
+    @field_validator('sweep_values')
+    @classmethod
+    def limit_sweep_values(cls, v: list[float]) -> list[float]:
+        if len(v) > 20:
+            raise ValueError("Maximum 20 sweep values allowed")
+        return v
 
 
 class NodeState(BaseModel):

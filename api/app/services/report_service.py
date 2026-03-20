@@ -141,7 +141,7 @@ Format as clean markdown with headers, tables, and bullet points."""
     )
 
     if response.status_code != 200:
-        raise RuntimeError(f"AI API error: {response.status_code} {response.text[:200]}")
+        raise RuntimeError(f"AI API error: {response.status_code}")
 
     result = response.json()
     content = result["choices"][0]["message"]["content"]

@@ -36,3 +36,8 @@ Thumbs.db
 
 # Output
 output/
+
+# Workspace data (user-specific)
+workspace/
+api/workspace/
+.cache/

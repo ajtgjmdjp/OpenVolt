@@ -20,6 +20,9 @@ export function ExplorerPanel({ onItemSelect, onFileClick, selectedItems, onTogg
   const [tree, setTree] = useState<Record<string, TreeEntry[]>>({})
   const [items, setItems] = useState<Array<Record<string, unknown>>>([])
   const [loading, setLoading] = useState(true)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const refresh = () => setRefreshKey((k) => k + 1)
 
   useEffect(() => {
     Promise.all([
@@ -30,7 +33,7 @@ export function ExplorerPanel({ onItemSelect, onFileClick, selectedItems, onTogg
       setItems(itemsData)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [])
+  }, [refreshKey])
 
   if (loading) {
     return (
@@ -42,9 +45,31 @@ export function ExplorerPanel({ onItemSelect, onFileClick, selectedItems, onTogg
     <div className="flex flex-col h-full">
       {/* Saved items */}
       <div className="p-3 border-b border-[var(--color-border)]">
-        <h3 className="text-xs uppercase tracking-wider text-[var(--color-text-dim)] mb-2">
-          Saved Results ({items.length})
-        </h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs uppercase tracking-wider text-[var(--color-text-dim)]">
+            Saved Results ({items.length})
+          </h3>
+          {items.length > 1 && (
+            <button
+              onClick={() => {
+                const allIds = items.map((item) => String(item.id))
+                const allSelected = allIds.every((id) => selectedItems?.has(id))
+                if (allSelected) {
+                  // Deselect all
+                  for (const id of allIds) onToggleSelect?.(id)
+                } else {
+                  // Select all
+                  for (const id of allIds) {
+                    if (!selectedItems?.has(id)) onToggleSelect?.(id)
+                  }
+                }
+              }}
+              className="text-[10px] text-[var(--color-text-dim)] hover:text-[var(--color-accent)]"
+            >
+              {items.every((item) => selectedItems?.has(String(item.id))) ? 'Deselect All' : 'Select All'}
+            </button>
+          )}
+        </div>
         {items.length === 0 ? (
           <p className="text-xs text-[var(--color-text-dim)]">No saved results yet. Run an optimization to get started.</p>
         ) : (
@@ -55,21 +80,22 @@ export function ExplorerPanel({ onItemSelect, onFileClick, selectedItems, onTogg
               return (
                 <div
                   key={id}
+                  onClick={() => onToggleSelect?.(id)}
                   className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-colors ${
                     isSelected ? 'bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/30' : 'hover:bg-[var(--color-surface-2)]'
                   }`}
                 >
-                  {/* Checkbox for compare multi-select */}
+                  {/* Checkbox visual (click handled by parent div) */}
                   <input
                     type="checkbox"
                     checked={isSelected}
-                    onChange={() => onToggleSelect?.(id)}
-                    className="accent-[var(--color-accent)] w-3 h-3 shrink-0"
+                    readOnly
+                    className="accent-[var(--color-accent)] w-3 h-3 shrink-0 pointer-events-none"
                   />
                   <span className="shrink-0">
-                    {item.kind === 'run' ? '⚡' : item.kind === 'backtest' ? '📊' : '🔬'}
+                    {item.kind === 'run' ? '⚡' : item.kind === 'backtest' ? '📈' : item.kind === 'experiment' ? '🔬' : '📄'}
                   </span>
-                  <div className="flex-1 min-w-0" onClick={() => onItemSelect?.(id)}>
+                  <div className="flex-1 min-w-0" onClick={(e) => { e.stopPropagation(); onItemSelect?.(id) }}>
                     <div className="truncate text-[var(--color-text)]">{String(item.title)}</div>
                     <div className="text-[10px] text-[var(--color-text-dim)]">
                       {String(item.kind)} · {String(item.created_at).slice(0, 16)}
@@ -94,10 +120,10 @@ export function ExplorerPanel({ onItemSelect, onFileClick, selectedItems, onTogg
                       e.stopPropagation()
                       if (!window.confirm(`Delete "${String(item.title)}"?`)) return
                       await fetch(`/api/workspace/items/${id}`, { method: 'DELETE' })
-                      // Remove from local state
+                      // Remove from local state + refresh tree
                       setItems((prev) => prev.filter((x) => String(x.id) !== id))
-                      // Notify parent to clean up selectedItems
                       onDeleteItem?.(id)
+                      refresh()
                     }}
                     className="text-[var(--color-text-dim)] hover:text-[var(--color-error)] text-[10px] px-1 shrink-0"
                     title="Delete"

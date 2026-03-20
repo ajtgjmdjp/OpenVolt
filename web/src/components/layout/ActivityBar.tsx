@@ -8,7 +8,7 @@ const activities: ActivityItem[] = [
   { id: 'explorer', icon: '📁', label: 'Explorer' },
   { id: 'studio', icon: '🔬', label: 'Studio' },
   { id: 'compare', icon: '⚖️', label: 'Compare' },
-  { id: 'reports', icon: '📊', label: 'Reports' },
+  { id: 'reports', icon: '📄', label: 'Reports' },
 ]
 
 type Props = {

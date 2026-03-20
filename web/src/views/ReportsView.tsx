@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { useAppStore } from '../store/useAppStore'
 
 type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -130,7 +129,7 @@ export function ReportsView() {
                   className="accent-[var(--color-accent)] w-3 h-3"
                 />
                 <span className="shrink-0">
-                  {item.kind === 'run' ? '⚡' : item.kind === 'backtest' ? '📊' : '🔬'}
+                  {item.kind === 'run' ? '⚡' : item.kind === 'backtest' ? '📈' : '🔬'}
                 </span>
                 <span className="truncate text-[var(--color-text)]">{item.title}</span>
               </label>
@@ -142,14 +141,23 @@ export function ReportsView() {
         </div>
       </div>
 
-      {/* Center: Chat + Report editor */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat area */}
-        <div className="flex-[40] overflow-y-auto p-4 border-b border-[var(--color-border)]">
-          <div className="space-y-3">
+      {/* Center: Chat (input pinned to bottom) */}
+      <div className="flex-1 flex flex-col min-w-0 border-r border-[var(--color-border)]">
+        {/* Context banner */}
+        {selectedIds.size > 0 && (
+          <div className="px-4 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] shrink-0">
+            <span className="text-[10px] text-[var(--color-text-dim)]">
+              Context: {selectedIds.size} artifact{selectedIds.size !== 1 ? 's' : ''} selected
+            </span>
+          </div>
+        )}
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="space-y-3 max-w-2xl mx-auto">
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] px-3 py-2 rounded-lg text-xs ${
+                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-xs ${
                   msg.role === 'user'
                     ? 'bg-[var(--color-accent)]/20 text-[var(--color-text)]'
                     : msg.role === 'assistant'
@@ -162,63 +170,77 @@ export function ReportsView() {
             ))}
             <div ref={chatEndRef} />
           </div>
-        </div>
 
-        {/* Input */}
-        <div className="flex items-center gap-2 p-3 border-b border-[var(--color-border)] shrink-0">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !generating && generateReport()}
-            placeholder="Describe the report you want..."
-            className="flex-1 px-3 py-2 text-xs rounded bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
-          />
-          <button
-            onClick={generateReport}
-            disabled={generating}
-            className={`px-4 py-2 text-xs rounded font-medium transition-all ${
-              generating
-                ? 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)]'
-                : 'bg-[var(--color-accent)] text-black hover:brightness-110'
-            }`}
-          >
-            {generating ? 'Generating...' : '📝 Generate'}
-          </button>
-        </div>
-
-        {/* Report editor */}
-        <div className="flex-[60] flex flex-col min-h-0">
-          {report ? (
-            <>
-              <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0 bg-[var(--color-surface)]">
-                <span className="text-xs text-[var(--color-text-dim)]">Report Preview</span>
-                <div className="ml-auto flex gap-2">
-                  <button onClick={downloadReport}
-                    className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-2 py-1 rounded border border-[var(--color-border)]">
-                    ⬇ Download .md
-                  </button>
-                  <button onClick={saveToWorkspace}
-                    className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-2 py-1 rounded border border-[var(--color-border)]">
-                    💾 Save to Workspace
-                  </button>
-                </div>
-              </div>
-              <textarea
-                value={report}
-                onChange={(e) => setReport(e.target.value)}
-                className="flex-1 p-4 text-xs mono bg-[var(--color-bg)] text-[var(--color-text)] outline-none resize-none"
-                spellCheck={false}
-              />
-            </>
-          ) : (
-            <div className="flex items-center justify-center h-full text-[var(--color-text-dim)]">
-              <div className="text-center">
-                <span className="text-4xl block mb-3">📝</span>
-                <p className="text-sm">Generate a report to see it here</p>
-              </div>
+          {/* Prompt suggestions when empty */}
+          {messages.length <= 1 && (
+            <div className="flex flex-wrap gap-2 justify-center mt-8">
+              {['Compare the selected backtests', 'Summarize tax impact', 'Write PM-style investment memo', 'Analyze tracking error trends'].map((s) => (
+                <button key={s} onClick={() => { setInput(s); }}
+                  className="px-3 py-1.5 text-[10px] rounded border border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]">
+                  {s}
+                </button>
+              ))}
             </div>
           )}
         </div>
+
+        {/* Input pinned to bottom */}
+        <div className="p-3 border-t border-[var(--color-border)] shrink-0 bg-[var(--color-surface)]">
+          <div className="flex items-center gap-2 max-w-2xl mx-auto">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !generating && generateReport()}
+              placeholder={selectedIds.size > 0 ? 'Ask about selected artifacts...' : 'Select artifacts first, then ask...'}
+              className="flex-1 px-3 py-2 text-xs rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+            />
+            <button
+              onClick={generateReport}
+              disabled={generating}
+              className={`px-4 py-2 text-xs rounded-lg font-medium transition-all ${
+                generating
+                  ? 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)]'
+                  : 'bg-[var(--color-accent)] text-black hover:brightness-110'
+              }`}
+            >
+              {generating ? '...' : '→'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Right: Report preview/editor */}
+      <div className="w-[40%] flex flex-col min-w-0 shrink-0">
+        {report ? (
+          <>
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0 bg-[var(--color-surface)]">
+              <span className="text-xs text-[var(--color-text-dim)]">Report</span>
+              <div className="ml-auto flex gap-2">
+                <button onClick={downloadReport}
+                  className="text-[10px] text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-2 py-1 rounded border border-[var(--color-border)]">
+                  ⬇ .md
+                </button>
+                <button onClick={saveToWorkspace}
+                  className="text-[10px] text-[var(--color-text-dim)] hover:text-[var(--color-accent)] px-2 py-1 rounded border border-[var(--color-border)]">
+                  💾 Save
+                </button>
+              </div>
+            </div>
+            <textarea
+              value={report}
+              onChange={(e) => setReport(e.target.value)}
+              className="flex-1 p-4 text-xs mono bg-[var(--color-bg)] text-[var(--color-text)] outline-none resize-none"
+              spellCheck={false}
+            />
+          </>
+        ) : (
+          <div className="flex items-center justify-center h-full text-[var(--color-text-dim)]">
+            <div className="text-center">
+              <span className="text-3xl block mb-3">📝</span>
+              <p className="text-xs">Report will appear here</p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -229,7 +251,7 @@ export function ReportsView() {
 // In production, this would call an AI API (Claude, GPT, etc.)
 // ---------------------------------------------------------------------------
 
-function generateMarkdownReport(artifacts: Record<string, unknown>[], userPrompt: string): string {
+export function generateMarkdownReport(artifacts: Record<string, unknown>[], userPrompt: string): string {
   const now = new Date().toISOString().slice(0, 10)
   const lines: string[] = []
 
