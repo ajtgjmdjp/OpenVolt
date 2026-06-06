@@ -1,11 +1,39 @@
 #include "core/optimizer/optimizer.hpp"
 #include <osqp.h>
 #include <Eigen/Sparse>
-#include <cmath>
-#include <stdexcept>
 #include <algorithm>
+#include <cmath>
+#include <memory>
+#include <stdexcept>
 
 namespace openvolt {
+
+namespace {
+
+// Sparse-matrix sentinel: drop quadratic terms smaller than this when
+// building the OSQP P matrix to keep the factorization sparse.
+constexpr double TRIPLET_EPSILON = 1e-12;
+// "Practically infinite" bound used for inequalities that are only
+// one-sided in our formulation. OSQP treats values outside +/- OSQP_INFTY
+// as no bound; we use 1e30 for safety against tightening defaults.
+constexpr double UNBOUNDED = 1e30;
+constexpr double OSQP_EPS_ABS = 1e-6;
+constexpr double OSQP_EPS_REL = 1e-6;
+constexpr int OSQP_MAX_ITER = 10000;
+constexpr double TRADING_DAYS_PER_YEAR = 252.0;
+
+// RAII guard so an exception or early return between osqp_setup() and
+// osqp_cleanup() never leaks the solver.
+struct OsqpSolverDeleter {
+    void operator()(OSQPSolver* s) const noexcept {
+        if (s != nullptr) {
+            osqp_cleanup(s);
+        }
+    }
+};
+using OsqpSolverPtr = std::unique_ptr<OSQPSolver, OsqpSolverDeleter>;
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // OSQP-based QP Optimizer
@@ -63,11 +91,11 @@ OptimizationResult OSQPOptimizer::solve(
     //     [0,                    0]
     // -----------------------------------------------------------------------
     std::vector<Eigen::Triplet<double>> P_triplets;
-    P_triplets.reserve(N * N);
+    P_triplets.reserve(static_cast<std::size_t>(N) * static_cast<std::size_t>(N));
     for (int i = 0; i < N; ++i) {
         for (int j = i; j < N; ++j) {
             const double val = 2.0 * params.lambda_te * cov(i, j);
-            if (std::abs(val) > 1e-12) {
+            if (std::abs(val) > TRIPLET_EPSILON) {
                 P_triplets.emplace_back(i, j, val);
             }
         }
@@ -173,38 +201,38 @@ OptimizationResult OSQPOptimizer::solve(
 
     // Rows N+1..2N: w_i - t_i <= w_c_i
     for (int i = 0; i < N; ++i) {
-        l(1 + N + i) = -1e30;
+        l(1 + N + i) = -UNBOUNDED;
         u(1 + N + i) = current_weights(i);
     }
 
     // Rows 2N+1..3N: -w_i - t_i <= -w_c_i
     for (int i = 0; i < N; ++i) {
-        l(1 + 2 * N + i) = -1e30;
+        l(1 + 2 * N + i) = -UNBOUNDED;
         u(1 + 2 * N + i) = -current_weights(i);
     }
 
     // Rows 3N+1..4N: t_i >= 0
     for (int i = 0; i < N; ++i) {
         l(1 + 3 * N + i) = 0.0;
-        u(1 + 3 * N + i) = 1e30;
+        u(1 + 3 * N + i) = UNBOUNDED;
     }
 
     // Turnover constraint bounds
     if (has_turnover) {
-        l(1 + 4 * N) = -1e30;
+        l(1 + 4 * N) = -UNBOUNDED;
         u(1 + 4 * N) = params.turnover_cap;
     }
 
     // -----------------------------------------------------------------------
     // Set up OSQP
     // -----------------------------------------------------------------------
-    OSQPSolver* solver = nullptr;
+    OSQPSolver* raw_solver = nullptr;
     OSQPSettings settings;
     osqp_set_default_settings(&settings);
     settings.verbose = false;
-    settings.eps_abs = 1e-6;
-    settings.eps_rel = 1e-6;
-    settings.max_iter = 10000;
+    settings.eps_abs = OSQP_EPS_ABS;
+    settings.eps_rel = OSQP_EPS_REL;
+    settings.max_iter = OSQP_MAX_ITER;
 
     // Convert Eigen sparse to OSQP CSC format
     OSQPCscMatrix P_csc;
@@ -226,7 +254,7 @@ OptimizationResult OSQPOptimizer::solve(
     A_csc.nz = -1;
 
     OSQPInt exit_flag = osqp_setup(
-        &solver,
+        &raw_solver,
         &P_csc,
         q.data(),
         &A_csc,
@@ -242,11 +270,16 @@ OptimizationResult OSQPOptimizer::solve(
 
     if (exit_flag != 0) {
         result.solver_status = "OSQP setup failed";
+        // osqp_setup may have allocated and partially initialized on failure;
+        // hand it to the RAII guard so cleanup runs unconditionally.
+        OsqpSolverPtr{raw_solver};
         return result;
     }
 
-    // Solve
-    exit_flag = osqp_solve(solver);
+    // Take ownership now that setup succeeded; cleanup runs on any return path.
+    OsqpSolverPtr solver{raw_solver};
+
+    exit_flag = osqp_solve(solver.get());
 
     if (exit_flag == 0 && solver->info->status_val == OSQP_SOLVED) {
         result.converged = true;
@@ -257,16 +290,17 @@ OptimizationResult OSQPOptimizer::solve(
         // Compute predicted TE
         const Vector active = result.target_weights - benchmark_weights;
         result.predicted_te = std::sqrt(
-            std::max(0.0, static_cast<double>(active.transpose() * cov * active)) * 252.0
+            std::max(0.0, static_cast<double>(active.transpose() * cov * active))
+            * TRADING_DAYS_PER_YEAR
         );
 
-        // Compute predicted turnover
-        result.predicted_turnover = (result.target_weights - current_weights).cwiseAbs().sum() / 2.0;
+        // Compute predicted turnover (one-sided: half the L1 distance).
+        result.predicted_turnover =
+            (result.target_weights - current_weights).cwiseAbs().sum() / 2.0;
     } else {
         result.solver_status = solver->info->status;
     }
 
-    osqp_cleanup(solver);
     return result;
 }
 

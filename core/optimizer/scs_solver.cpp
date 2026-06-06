@@ -13,11 +13,42 @@
 #include <scs/scs.h>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <memory>
 #include <vector>
 
 namespace openvolt {
+
+namespace {
+
+constexpr double TRIPLET_EPSILON = 1e-12;
+constexpr double SCS_EPS_ABS = 1e-6;
+constexpr double SCS_EPS_REL = 1e-6;
+constexpr int SCS_MAX_ITER = 10000;
+constexpr double TRADING_DAYS_PER_YEAR = 252.0;
+
+// SCS 3.x C API uses raw `calloc`'d structs. Wrap them in unique_ptr with a
+// custom deleter so partial setup, exceptions inside `scs(...)`, or future
+// early returns never leak. Each `make_c<T>()` zero-initializes and panics
+// (well, returns null which then triggers the empty-portfolio path) on OOM.
+struct FreeDeleter {
+    void operator()(void* p) const noexcept { std::free(p); }
+};
+template <typename T>
+using CPtr = std::unique_ptr<T, FreeDeleter>;
+
+template <typename T>
+CPtr<T> make_c() {
+    return CPtr<T>{static_cast<T*>(std::calloc(1, sizeof(T)))};
+}
+
+CPtr<double> make_c_array(std::size_t n) {
+    return CPtr<double>{static_cast<double*>(std::calloc(n, sizeof(double)))};
+}
+
+} // namespace
 
 class SCSOptimizer final : public Optimizer {
 public:
@@ -51,7 +82,7 @@ OptimizationResult SCSOptimizer::solve(
     for (int i = 0; i < N; ++i) {
         for (int j = i; j < N; ++j) {
             const double val = 2.0 * params.lambda_te * cov(i, j);
-            if (std::abs(val) > 1e-12) {
+            if (std::abs(val) > TRIPLET_EPSILON) {
                 P_triplets.emplace_back(i, j, val);
             }
         }
@@ -188,49 +219,57 @@ OptimizationResult SCSOptimizer::solve(
     // -----------------------------------------------------------------------
     // SCS setup
     // -----------------------------------------------------------------------
-    ScsCone* cone = static_cast<ScsCone*>(calloc(1, sizeof(ScsCone)));
+    auto cone = make_c<ScsCone>();
+    auto settings = make_c<ScsSettings>();
+    auto P_scs = make_c<ScsMatrix>();
+    auto A_scs = make_c<ScsMatrix>();
+    auto data = make_c<ScsData>();
+    auto sol = make_c<ScsSolution>();
+    auto sol_x = make_c_array(static_cast<std::size_t>(n));
+    auto sol_y = make_c_array(static_cast<std::size_t>(m));
+    auto sol_s = make_c_array(static_cast<std::size_t>(m));
+
+    OptimizationResult result;
+    result.converged = false;
+    if (!cone || !settings || !P_scs || !A_scs || !data || !sol || !sol_x || !sol_y || !sol_s) {
+        result.solver_status = "SCS allocation failed";
+        return result;
+    }
+
     cone->z = 1;           // Zero cone: 1 equality
     cone->l = n_nonneg;    // Nonneg cone
 
-    ScsSettings* settings = static_cast<ScsSettings*>(calloc(1, sizeof(ScsSettings)));
-    scs_set_default_settings(settings);
+    scs_set_default_settings(settings.get());
     settings->verbose = 0;
-    settings->eps_abs = 1e-6;
-    settings->eps_rel = 1e-6;
-    settings->max_iters = 10000;
+    settings->eps_abs = SCS_EPS_ABS;
+    settings->eps_rel = SCS_EPS_REL;
+    settings->max_iters = SCS_MAX_ITER;
 
-    ScsMatrix* P_scs = static_cast<ScsMatrix*>(calloc(1, sizeof(ScsMatrix)));
     P_scs->m = n;
     P_scs->n = n;
     P_scs->x = const_cast<double*>(P_eigen.valuePtr());
     P_scs->i = P_i.data();
     P_scs->p = P_p.data();
 
-    ScsMatrix* A_scs = static_cast<ScsMatrix*>(calloc(1, sizeof(ScsMatrix)));
     A_scs->m = m;
     A_scs->n = n;
     A_scs->x = const_cast<double*>(A_eigen.valuePtr());
     A_scs->i = A_i.data();
     A_scs->p = A_p.data();
 
-    ScsData* data = static_cast<ScsData*>(calloc(1, sizeof(ScsData)));
     data->m = m;
     data->n = n;
-    data->P = P_scs;
-    data->A = A_scs;
+    data->P = P_scs.get();
+    data->A = A_scs.get();
     data->b = b.data();
     data->c = c_vec.data();
 
-    ScsSolution* sol = static_cast<ScsSolution*>(calloc(1, sizeof(ScsSolution)));
-    sol->x = static_cast<double*>(calloc(n, sizeof(double)));
-    sol->y = static_cast<double*>(calloc(m, sizeof(double)));
-    sol->s = static_cast<double*>(calloc(m, sizeof(double)));
+    sol->x = sol_x.get();
+    sol->y = sol_y.get();
+    sol->s = sol_s.get();
 
     ScsInfo info;
-    scs_int status = scs(data, cone, settings, sol, &info);
-
-    OptimizationResult result;
-    result.converged = false;
+    const scs_int status = scs(data.get(), cone.get(), settings.get(), sol.get(), &info);
 
     if (status == SCS_SOLVED || status == SCS_SOLVED_INACCURATE) {
         result.converged = true;
@@ -240,15 +279,14 @@ OptimizationResult SCSOptimizer::solve(
 
         const Vector active = result.target_weights - benchmark_weights;
         result.predicted_te = std::sqrt(
-            std::max(0.0, static_cast<double>(active.transpose() * cov * active)) * 252.0
+            std::max(0.0, static_cast<double>(active.transpose() * cov * active))
+            * TRADING_DAYS_PER_YEAR
         );
-        result.predicted_turnover = (result.target_weights - current_weights).cwiseAbs().sum() / 2.0;
+        result.predicted_turnover =
+            (result.target_weights - current_weights).cwiseAbs().sum() / 2.0;
     } else {
         result.solver_status = info.status;
     }
-
-    free(sol->x); free(sol->y); free(sol->s); free(sol);
-    free(data); free(P_scs); free(A_scs); free(cone); free(settings);
 
     return result;
 }

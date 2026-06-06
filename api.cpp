@@ -7,6 +7,21 @@
 
 namespace ov {
 
+namespace {
+
+// Tunables shared by the rebalance pipeline.
+constexpr double TRACE_EPSILON = 1e-12;
+constexpr double SHARE_EPSILON = 1e-10;
+constexpr double BPS_TO_FRACTION = 1.0 / 10000.0;
+constexpr double TRADING_DAYS_PER_YEAR = 252.0;
+// Lots held strictly longer than this count as long-term for tax purposes.
+// US convention is one calendar year; jurisdictions that don't distinguish
+// (e.g. Japan 特定口座) pass identical short/long rates so the boundary is
+// inert.
+constexpr int LONG_TERM_HOLDING_DAYS = 365;
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // Internal: convert public types to Eigen
 // ---------------------------------------------------------------------------
@@ -129,8 +144,16 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
     Eigen::VectorXd tcost_frac = Eigen::VectorXd::Zero(N);
     if (!market.transaction_cost_bps.empty()) {
         for (int i = 0; i < N; ++i) {
-            tcost_frac(i) = market.transaction_cost_bps[i] / 10000.0;
+            tcost_frac(i) = market.transaction_cost_bps[i] * BPS_TO_FRACTION;
         }
+    }
+
+    // Asset-id → index lookup; reused below to avoid O(N) scans inside the
+    // trade and lot-disposition loops.
+    std::unordered_map<AssetId, int> id_to_idx;
+    id_to_idx.reserve(static_cast<std::size_t>(N));
+    for (int i = 0; i < N; ++i) {
+        id_to_idx.emplace(market.asset_ids[i], i);
     }
 
     // -----------------------------------------------------------------------
@@ -139,7 +162,7 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
     // -----------------------------------------------------------------------
     double cov_scale = 1.0;
     const double cov_trace = cov.trace();
-    if (cov_trace > 1e-12) {
+    if (cov_trace > TRACE_EPSILON) {
         cov_scale = static_cast<double>(N) / cov_trace;
     }
     const Eigen::MatrixXd cov_scaled = cov * cov_scale;
@@ -200,7 +223,8 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
     if (opt_result.converged) {
         Eigen::VectorXd active = opt_result.target_weights - w_bench;
         double variance = static_cast<double>(active.transpose() * cov * active);
-        result.diagnostics.ex_ante_tracking_error = std::sqrt(std::max(0.0, variance) * 252.0);
+        result.diagnostics.ex_ante_tracking_error =
+            std::sqrt(std::max(0.0, variance) * TRADING_DAYS_PER_YEAR);
     }
 
     if (opt_result.converged) {
@@ -229,7 +253,7 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
                 trade.notional = trade.shares * market.prices[i];
             }
 
-            if (trade.shares > 1e-10) {
+            if (trade.shares > SHARE_EPSILON) {
                 result.trades.push_back(trade);
             }
         }
@@ -265,13 +289,9 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
                     break;
                 case DisposalMethod::specific_id:
                 default: {
-                    double price = 0.0;
-                    for (std::size_t i = 0; i < market.asset_ids.size(); ++i) {
-                        if (market.asset_ids[i] == trade.asset_id) {
-                            price = market.prices[i];
-                            break;
-                        }
-                    }
+                    const auto price_it = id_to_idx.find(trade.asset_id);
+                    const double price =
+                        price_it != id_to_idx.end() ? market.prices[price_it->second] : 0.0;
                     // Tax optimal: losses first, then highest cost
                     std::sort(lots.begin(), lots.end(),
                         [price](const TaxLot* a, const TaxLot* b) {
@@ -288,16 +308,12 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
 
             // Allocate sell across lots
             double remaining = trade.shares;
-            double price = 0.0;
-            for (std::size_t i = 0; i < market.asset_ids.size(); ++i) {
-                if (market.asset_ids[i] == trade.asset_id) {
-                    price = market.prices[i];
-                    break;
-                }
-            }
+            const auto price_it = id_to_idx.find(trade.asset_id);
+            const double price =
+                price_it != id_to_idx.end() ? market.prices[price_it->second] : 0.0;
 
             for (const auto* lot : lots) {
-                if (remaining <= 1e-10) break;
+                if (remaining <= SHARE_EPSILON) break;
 
                 double sell_shares = std::min(remaining, lot->shares);
                 double proceeds = sell_shares * price;
@@ -306,7 +322,7 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
 
                 // Determine tax character based on holding period
                 auto hold_days = (market.as_of - lot->acquired_on).count();
-                TaxCharacter character = hold_days > 365
+                TaxCharacter character = hold_days > LONG_TERM_HOLDING_DAYS
                     ? TaxCharacter::long_term
                     : TaxCharacter::short_term;
 
@@ -339,12 +355,12 @@ RebalanceResult plan_rebalance(const RebalanceRequest& request) {
 
         result.diagnostics.estimated_transaction_cost = 0.0;
         for (const auto& trade : result.trades) {
-            for (std::size_t i = 0; i < market.asset_ids.size(); ++i) {
-                if (market.asset_ids[i] == trade.asset_id) {
-                    result.diagnostics.estimated_transaction_cost +=
-                        trade.notional * market.transaction_cost_bps[i] / 10000.0;
-                    break;
-                }
+            const auto it = id_to_idx.find(trade.asset_id);
+            if (it == id_to_idx.end()) continue;
+            const int idx = it->second;
+            if (idx < static_cast<int>(market.transaction_cost_bps.size())) {
+                result.diagnostics.estimated_transaction_cost +=
+                    trade.notional * market.transaction_cost_bps[idx] * BPS_TO_FRACTION;
             }
         }
     }

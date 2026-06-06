@@ -1,13 +1,32 @@
 """OpenVolt MCP Server — exposes portfolio optimization to AI agents."""
 
-import sys
 import json
+import logging
+import sys
+import time
 from pathlib import Path
 
-# Add build directory for C++ module
-_build_dir = str(Path(__file__).resolve().parents[1] / "build")
-if _build_dir not in sys.path:
-    sys.path.insert(0, _build_dir)
+logger = logging.getLogger(__name__)
+
+# Defaults for the plan_rebalance tool. Mirror the Python and FastAPI
+# entry points so AI agents and HTTP clients see the same risk/tax knobs.
+DEFAULT_LAMBDA_TE = 200.0
+DEFAULT_LAMBDA_TAX = 400.0
+DEFAULT_MAX_TURNOVER = 0.15
+DEFAULT_TAX_RATE = 0.20315  # Japan 特定口座
+DEFAULT_PER_NAME_CAP = 0.20
+DEFAULT_TCOST_BPS = 5.0
+DEFAULT_MIN_TRADE_NOTIONAL = 10_000
+DEFAULT_WORKSPACE_LIST_LIMIT = 20
+TARGET_WEIGHT_DECIMALS = 6
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_BUILD_DIR = _PROJECT_ROOT / "build"
+# Add build dir (for _openvolt) and project root (for `api.app.*`) once at
+# import time instead of inside every handler.
+for _p in (_BUILD_DIR, _PROJECT_ROOT):
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 try:
     from mcp.server import Server
@@ -24,6 +43,13 @@ try:
     HAS_ENGINE = True
 except ImportError:
     HAS_ENGINE = False
+
+
+def _workspace_store():
+    """Return a WorkspaceStore handle, importing lazily on first use."""
+    from api.app.services.workspace.store import WorkspaceStore
+
+    return WorkspaceStore("workspace")
 
 
 def create_server() -> "Server":
@@ -153,40 +179,31 @@ def create_server() -> "Server":
         # Workspace tools
         if name == "list_workspace":
             try:
-                from pathlib import Path
-                sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-                from api.app.services.workspace.store import WorkspaceStore
-                ws = WorkspaceStore("workspace")
-                items = ws.list_items(
+                items = _workspace_store().list_items(
                     kind=arguments.get("kind"),
-                    limit=arguments.get("limit", 20),
+                    limit=arguments.get("limit", DEFAULT_WORKSPACE_LIST_LIMIT),
                 )
                 return [TextContent(type="text", text=json.dumps(items, indent=2, default=str))]
             except Exception as e:
+                logger.exception("list_workspace failed")
                 return [TextContent(type="text", text=f"Error: {e}")]
 
         if name == "read_artifact":
             try:
-                from pathlib import Path
-                sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-                from api.app.services.workspace.store import WorkspaceStore
-                ws = WorkspaceStore("workspace")
-                content = ws.get_artifact(arguments["item_id"], arguments["artifact_name"])
+                content = _workspace_store().get_artifact(
+                    arguments["item_id"], arguments["artifact_name"]
+                )
                 if content is None:
                     return [TextContent(type="text", text=f"Artifact not found: {arguments['artifact_name']}")]
                 return [TextContent(type="text", text=content)]
             except Exception as e:
+                logger.exception("read_artifact failed")
                 return [TextContent(type="text", text=f"Error: {e}")]
 
         if name == "save_report":
             try:
-                from pathlib import Path
-                sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-                from api.app.services.workspace.store import WorkspaceStore
-                ws = WorkspaceStore("workspace")
-                import time
                 report_id = f"rpt_{int(time.time())}"
-                ws.save_item(
+                _workspace_store().save_item(
                     id=report_id,
                     kind="report",
                     title=arguments["title"],
@@ -196,6 +213,7 @@ def create_server() -> "Server":
                 )
                 return [TextContent(type="text", text=f"Report saved as {report_id}")]
             except Exception as e:
+                logger.exception("save_report failed")
                 return [TextContent(type="text", text=f"Error: {e}")]
 
         # Optimization tool
@@ -233,7 +251,7 @@ def create_server() -> "Server":
 
             prices = np.array(arguments["prices"], dtype=float)
             bench_w = np.array(arguments["benchmark_weights"], dtype=float)
-            tcost_bps = np.full(N, 5.0)
+            tcost_bps = np.full(N, DEFAULT_TCOST_BPS)
 
             market = ov.MarketData(
                 as_of=as_of,
@@ -245,20 +263,23 @@ def create_server() -> "Server":
             )
 
             # Config
+            tax_rate = float(arguments.get("tax_rate", DEFAULT_TAX_RATE))
             config = ov.OptimizationConfig()
-            config.objective.tracking_error = float(arguments.get("lambda_te", 200.0))
+            config.objective.tracking_error = float(arguments.get("lambda_te", DEFAULT_LAMBDA_TE))
             config.objective.transaction_cost = 0.0
-            config.objective.tax_cost = float(arguments.get("lambda_tax", 400.0))
-            config.constraints.max_turnover = float(arguments.get("max_turnover", 0.15))
-            config.taxes.short_term_rate = float(arguments.get("tax_rate", 0.20315))
-            config.taxes.long_term_rate = float(arguments.get("tax_rate", 0.20315))
+            config.objective.tax_cost = float(arguments.get("lambda_tax", DEFAULT_LAMBDA_TAX))
+            config.constraints.max_turnover = float(
+                arguments.get("max_turnover", DEFAULT_MAX_TURNOVER)
+            )
+            config.taxes.short_term_rate = tax_rate
+            config.taxes.long_term_rate = tax_rate
             config.taxes.wash_sale_window_days = None
             config.taxes.disposal_method = ov.DisposalMethod.specific_id
-            config.min_trade_notional = 10000
+            config.min_trade_notional = DEFAULT_MIN_TRADE_NOTIONAL
             config.round_to_whole_shares = True
 
             for aid in asset_ids:
-                config.constraints.weight_bounds[aid] = ov.WeightBound(0.0, 0.20)
+                config.constraints.weight_bounds[aid] = ov.WeightBound(0.0, DEFAULT_PER_NAME_CAP)
 
             # Run optimization
             result = ov.plan_rebalance(ov.RebalanceRequest(portfolio, market, config))
@@ -289,7 +310,7 @@ def create_server() -> "Server":
                     for d in result.lot_dispositions
                 ],
                 "target_weights": {
-                    asset_ids[i]: round(result.target_weights[i], 6)
+                    asset_ids[i]: round(result.target_weights[i], TARGET_WEIGHT_DECIMALS)
                     for i in range(N)
                 },
             }
@@ -297,7 +318,8 @@ def create_server() -> "Server":
             return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
         except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            logger.exception("plan_rebalance failed")
+            return [TextContent(type="text", text=f"Error: {e}")]
 
     return server
 
@@ -314,4 +336,6 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     asyncio.run(main())
