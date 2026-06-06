@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
-import os
+import shutil
 import sqlite3
-import time
-from pathlib import Path
-from typing import Optional
+from collections.abc import Iterator
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 class WorkspaceStore:
@@ -54,6 +54,20 @@ class WorkspaceStore:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a SQLite connection, guaranteed to be closed on exit.
+
+        Always preferred over manual `_conn()`+`close()` because any
+        exception between the two would leak the connection (and on
+        Windows, lock the database).
+        """
+        conn = self._conn()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     # -----------------------------------------------------------------------
     # CRUD
@@ -102,34 +116,43 @@ class WorkspaceStore:
                 else:
                     path.write_text(content)
 
-        # Save manifest
+        # Save manifest. Only list artifacts that were actually written so
+        # consumers don't 404 on optional config/summary files.
+        manifest_artifacts = list((artifacts or {}).keys())
+        if config:
+            manifest_artifacts.append("config.json")
+        if summary:
+            manifest_artifacts.append("summary.json")
         manifest = {
             "id": id, "kind": kind, "title": title,
             "created_at": now, "artifact_dir": artifact_dir,
-            "artifacts": list((artifacts or {}).keys()) + ["config.json", "summary.json"],
+            "artifacts": manifest_artifacts,
         }
         (full_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
         # Upsert in SQLite
-        conn = self._conn()
-        conn.execute("""
-            INSERT OR REPLACE INTO items (id, kind, title, created_at, updated_at,
-                config_json, summary_json, tags, artifact_dir)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (id, kind, title, now, now,
-              json.dumps(config) if config else None,
-              json.dumps(summary) if summary else None,
-              ",".join(tags or []),
-              artifact_dir))
-        conn.commit()
-        conn.close()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO items (id, kind, title, created_at, updated_at,
+                    config_json, summary_json, tags, artifact_dir)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    id, kind, title, now, now,
+                    json.dumps(config) if config else None,
+                    json.dumps(summary) if summary else None,
+                    ",".join(tags or []),
+                    artifact_dir,
+                ),
+            )
+            conn.commit()
 
         return manifest
 
     def list_items(self, kind: str | None = None, limit: int = 50,
                    search: str | None = None) -> list[dict]:
         """List workspace items, optionally filtered."""
-        conn = self._conn()
         query = "SELECT * FROM items"
         params: list = []
         conditions = []
@@ -146,16 +169,14 @@ class WorkspaceStore:
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
-
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def get_item(self, id: str) -> dict | None:
         """Get a single workspace item by ID."""
-        conn = self._conn()
-        row = conn.execute("SELECT * FROM items WHERE id = ?", (id,)).fetchone()
-        conn.close()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM items WHERE id = ?", (id,)).fetchone()
         return dict(row) if row else None
 
     def get_artifact(self, id: str, artifact_name: str) -> str | None:
@@ -181,15 +202,13 @@ class WorkspaceStore:
 
         # Delete artifact directory
         if item.get("artifact_dir"):
-            import shutil
             full_dir = self.root / item["artifact_dir"]
             if full_dir.exists():
                 shutil.rmtree(full_dir)
 
-        conn = self._conn()
-        conn.execute("DELETE FROM items WHERE id = ?", (id,))
-        conn.commit()
-        conn.close()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM items WHERE id = ?", (id,))
+            conn.commit()
         return True
 
     def update_item(self, id: str, title: str | None = None,
@@ -197,7 +216,6 @@ class WorkspaceStore:
                     pinned: bool | None = None,
                     notes: str | None = None) -> bool:
         """Update metadata of a workspace item."""
-        conn = self._conn()
         updates = []
         params: list = []
         now = datetime.now(timezone.utc).isoformat()
@@ -215,13 +233,16 @@ class WorkspaceStore:
             updates.append("notes = ?")
             params.append(notes)
 
+        if not updates:
+            return False  # Nothing requested — caller probably has a bug.
+
         updates.append("updated_at = ?")
         params.append(now)
         params.append(id)
 
-        conn.execute(f"UPDATE items SET {', '.join(updates)} WHERE id = ?", params)
-        conn.commit()
-        conn.close()
+        with self._connect() as conn:
+            conn.execute(f"UPDATE items SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
         return True
 
     # -----------------------------------------------------------------------

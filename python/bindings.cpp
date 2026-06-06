@@ -9,16 +9,31 @@
 
 namespace py = pybind11;
 
-// Helper: parse ISO date string "YYYY-MM-DD" to sys_days
+// Helper: parse ISO date string "YYYY-MM-DD" to sys_days. Throws
+// std::invalid_argument (surfaces as ValueError in Python) if the input
+// is not a valid ISO 8601 calendar date with `-` separators or if the
+// resulting year-month-day is invalid (e.g. 2025-02-30).
 static ov::Date parse_date(const std::string& s) {
-    int y, m, d;
-    char sep1, sep2;
+    int y = 0, m = 0, d = 0;
+    char sep1 = '\0', sep2 = '\0';
     std::istringstream iss(s);
     iss >> y >> sep1 >> m >> sep2 >> d;
-    return std::chrono::sys_days{
-        std::chrono::year{y} / std::chrono::month{static_cast<unsigned>(m)}
-        / std::chrono::day{static_cast<unsigned>(d)}
+    if (iss.fail() || sep1 != '-' || sep2 != '-') {
+        throw std::invalid_argument("Expected date in YYYY-MM-DD form, got: " + s);
+    }
+    if (m < 1 || m > 12 || d < 1 || d > 31) {
+        throw std::invalid_argument("Date components out of range: " + s);
+    }
+    const std::chrono::year_month_day ymd{
+        std::chrono::year{y},
+        std::chrono::month{static_cast<unsigned>(m)},
+        std::chrono::day{static_cast<unsigned>(d)},
     };
+    if (!ymd.ok()) {
+        // Catches things like Feb 30.
+        throw std::invalid_argument("Invalid calendar date: " + s);
+    }
+    return std::chrono::sys_days{ymd};
 }
 
 // Helper: format sys_days to "YYYY-MM-DD"
