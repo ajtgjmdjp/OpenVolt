@@ -222,4 +222,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-[AGPL-3.0](LICENSE) — Professional-grade quant models, open to everyone.
+[Apache-2.0](LICENSE) — Professional-grade quant models, open to everyone.

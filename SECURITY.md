@@ -24,4 +24,4 @@ OpenVolt is a local-first portfolio optimization tool. Security considerations i
 - Parameterized SQL queries (no string interpolation)
 - Path traversal protection on all file operations
 - Input validation with Pydantic schemas
-- AGPL-3.0 ensures transparency
+- Apache-2.0 ensures transparency
