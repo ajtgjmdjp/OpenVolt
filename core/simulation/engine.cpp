@@ -178,7 +178,9 @@ SimulationResult BacktestEngine::run(
     result.total_trades = static_cast<int>(result.trade_history.size());
     result.total_realized_pnl = 0.0;
     result.total_tax_paid = 0.0;
+    Money total_notional = 0.0;
     for (const auto& trade : result.trade_history) {
+        total_notional += std::abs(trade.notional);
         if (trade.side == Side::Sell) {
             result.total_realized_pnl += trade.realized_pnl;
             if (trade.realized_pnl > 0.0) {
@@ -186,7 +188,11 @@ SimulationResult BacktestEngine::run(
             }
         }
     }
-    result.turnover = 0.0;  // TODO: compute from trade history
+    // Turnover as a fraction of starting NAV — total notional traded
+    // (buys + sells) divided by initial investment.
+    result.turnover = config_.initial_investment > 0.0
+                          ? total_notional / config_.initial_investment
+                          : 0.0;
 
     return result;
 }

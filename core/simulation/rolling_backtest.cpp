@@ -89,6 +89,9 @@ BacktestResult run_rolling_backtest(
     Money total_tax_paid = 0.0;
     int total_trades = 0;
     int total_rebalances = 0;
+    // Per-rebalance turnover = sum(|trade.notional|) / NAV at rebalance time.
+    // Average is reported in the summary.
+    double total_turnover_ratio = 0.0;
 
     for (int t = 0; t < T; ++t) {
         // Current prices
@@ -215,8 +218,10 @@ BacktestResult run_rolling_backtest(
                     total_rebalances++;
                     days_since_rebalance = 0;
 
+                    double rebal_notional = 0.0;
                     // Execute trades
                     for (const auto& trade : rebal_result.trades) {
+                        rebal_notional += std::abs(trade.notional);
                         int idx = -1;
                         for (int i = 0; i < N; ++i) {
                             if (config.tickers[i] == trade.asset_id) { idx = i; break; }
@@ -263,6 +268,9 @@ BacktestResult run_rolling_backtest(
                     total_trades += day_trades;
                     total_realized_pnl += day_pnl;
                     total_tax_paid += day_tax;
+                    if (nav > 0.0) {
+                        total_turnover_ratio += rebal_notional / nav;
+                    }
 
                     result.rebalance_results.push_back(std::move(rebal_result));
                 }
@@ -305,7 +313,8 @@ BacktestResult run_rolling_backtest(
     s.sharpe_ratio = s.annualized_volatility > 0.0 ? s.annualized_return / s.annualized_volatility : 0.0;
     s.information_ratio = s.annualized_tracking_error > 0.0 ? s.annualized_active_return / s.annualized_tracking_error : 0.0;
     s.max_drawdown = port_returns.empty() ? 0.0 : max_drawdown(port_returns);
-    s.average_turnover = total_rebalances > 0 ? 0.0 : 0.0;  // TODO: compute from rebalance results
+    s.average_turnover =
+        total_rebalances > 0 ? total_turnover_ratio / total_rebalances : 0.0;
     s.total_realized_pnl = total_realized_pnl;
     s.total_tax_paid = total_tax_paid;
     s.total_trades = total_trades;
