@@ -27,6 +27,7 @@ except ImportError:
     HAS_YFINANCE = False
 
 from ..data.presets import PRESETS
+from ._universe import fetch_prices, filter_and_renormalize, resolve_universe
 
 
 # --- Tunables ---------------------------------------------------------------
@@ -66,54 +67,19 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
     if not preset:
         raise ValueError(f"Unknown preset: {preset_id}")
 
-    universe = preset["universe"]
+    tickers, bench_w, _universe_dict = resolve_universe(preset, period)
+    raw_close = fetch_prices(tickers, period)
+    close, tickers, bench_w, _universe_dict = filter_and_renormalize(
+        raw_close, tickers, bench_w, _universe_dict
+    )
 
-    if universe == "dynamic":
-        # Resolve dynamic universe via benchmark_service
-        from .benchmark_service import resolve_benchmark
-        index_id = preset.get("index_id")
-        target = preset.get("target_holdings", 0)
-        resolved = resolve_benchmark(index_id=index_id, target_holdings=target, period=period)
-        tickers = resolved["tickers"]
-        bench_w = np.array(resolved["weights"], dtype=float)
-    else:
-        tickers = list(universe.keys())
-        bench_w = np.array([universe[t]["bench_w"] for t in tickers], dtype=float)
+    if len(tickers) < MIN_AVAILABLE_TICKERS:
+        raise ValueError(f"Not enough tickers with data: {len(tickers)}")
 
-    N = len(tickers)
-
-    # Fetch price data
-    data = yf.download(tickers, period=period, auto_adjust=True, progress=False)
-
-    # Handle MultiIndex columns + missing tickers
-    import pandas as pd
-    if isinstance(data.columns, pd.MultiIndex):
-        close = data["Close"]
-    else:
-        close = data[["Close"]].rename(columns={"Close": tickers[0]}) if N == 1 else data["Close"]
-
-    # Keep only tickers that have data, ffill gaps
-    available = [
-        t
-        for t in tickers
-        if t in close.columns and close[t].notna().sum() > MIN_PRICE_OBS_PER_TICKER
-    ]
-    if len(available) < MIN_AVAILABLE_TICKERS:
-        raise ValueError(f"Not enough tickers with data: {len(available)}")
-    close = close[available].ffill().dropna()
     T = len(close)
-
     if T < MIN_TRADING_DAYS:
         raise ValueError(f"Not enough price data: {T} days")
-
-    # Recompute bench_w for available tickers only
-    if len(available) < len(tickers):
-        avail_set = set(available)
-        idx_map = {t: i for i, t in enumerate(tickers)}
-        raw_w = np.array([bench_w[idx_map[t]] for t in available])
-        bench_w = raw_w / raw_w.sum()  # Renormalize
-        tickers = available
-        N = len(tickers)
+    N = len(tickers)
 
     initial_investment = preset.get("initial_investment", DEFAULT_INITIAL_INVESTMENT)
     tax_rate = preset.get("tax_rate", DEFAULT_TAX_RATE)
