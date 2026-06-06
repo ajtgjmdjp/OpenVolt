@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
 
 from ..schemas import (
     CreateRunRequest,
@@ -99,14 +102,20 @@ async def ws_run(websocket: WebSocket, run_id: str):
 
 
 async def _broadcast(run_id: str, event: RunEvent):
-    """Send event to all WebSocket subscribers."""
+    """Send event to all WebSocket subscribers; drop those that have closed."""
     if run_id not in _subscribers:
         return
-    dead = []
+    dead: list[WebSocket] = []
+    payload = event.model_dump()
     for ws in _subscribers[run_id]:
         try:
-            await ws.send_json(event.model_dump())
+            await ws.send_json(payload)
+        except WebSocketDisconnect:
+            dead.append(ws)
         except Exception:
+            # Treat unexpected send errors as a closed socket but record
+            # them so silent connection drops are visible in logs.
+            logger.warning("Dropping subscriber on run %s after send error", run_id, exc_info=True)
             dead.append(ws)
     for ws in dead:
         _subscribers[run_id].remove(ws)

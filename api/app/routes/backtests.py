@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import CreateBacktestRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -91,9 +94,12 @@ async def _run_backtest(backtest_id: str, req: CreateBacktestRequest):
                 },
             )
         except Exception:
-            pass  # Non-critical
+            # Workspace persistence is best-effort — the in-memory result is
+            # still returned to clients even if disk write fails.
+            logger.exception("Failed to persist backtest %s to workspace", backtest_id)
 
     except Exception as e:
+        logger.exception("Backtest %s failed", backtest_id)
         _results[backtest_id] = {
             "backtest_id": backtest_id,
             "status": "failed",

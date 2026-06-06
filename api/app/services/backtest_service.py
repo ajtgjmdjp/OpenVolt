@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 _build_dir = str(Path(__file__).resolve().parents[3] / "build")
 if _build_dir not in sys.path:
@@ -311,19 +314,34 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
     for idx_sym in symbols_to_fetch:
         try:
             idx_data = yf.download(idx_sym, period=period, progress=False)
-            if not idx_data.empty:
-                idx_close = idx_data["Close"]
-                idx_first = float(idx_close.iloc[0].item() if hasattr(idx_close.iloc[0], 'item') else idx_close.iloc[0])
-                series = []
-                for i in range(len(idx_close)):
-                    val = float(idx_close.iloc[i].item() if hasattr(idx_close.iloc[i], 'item') else idx_close.iloc[i])
-                    series.append({
-                        "date": str(idx_close.index[i].date()),
-                        "value": round(val / idx_first * 100, 2),
-                    })
-                all_index_series.append({"symbol": idx_sym, "series": series})
         except Exception:
-            pass
+            # Network/yfinance failures shouldn't abort the backtest; the
+            # overlay is informational.
+            logger.warning("Failed to fetch market index %s", idx_sym, exc_info=True)
+            continue
+        if idx_data.empty:
+            logger.info("Market index %s returned no data for period %s", idx_sym, period)
+            continue
+        idx_close = idx_data["Close"]
+        idx_first_raw = idx_close.iloc[0]
+        idx_first = float(idx_first_raw.item() if hasattr(idx_first_raw, "item") else idx_first_raw)
+        series = [
+            {
+                "date": str(idx_close.index[i].date()),
+                "value": round(
+                    float(
+                        idx_close.iloc[i].item()
+                        if hasattr(idx_close.iloc[i], "item")
+                        else idx_close.iloc[i]
+                    )
+                    / idx_first
+                    * 100,
+                    2,
+                ),
+            }
+            for i in range(len(idx_close))
+        ]
+        all_index_series.append({"symbol": idx_sym, "series": series})
 
     # Backward compatibility: keep single index_series/index_symbol for existing frontend
     index_series = all_index_series[0]["series"] if all_index_series else None

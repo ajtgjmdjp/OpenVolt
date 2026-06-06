@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import AsyncGenerator
 
 from ..schemas import CreateRunRequest
 from ..data.pipeline import PIPELINE_GRAPH
 from ..data.presets import PRESETS
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineRunner:
@@ -108,6 +111,7 @@ class PipelineRunner:
                 self.request.period,
             )
         except Exception as e:
+            logger.exception("Optimizer failed for run %s", self.run_id)
             yield ("node.failed", "optimizer.main", {"error": str(e)})
             yield ("run.failed", None, {"error": str(e)})
             return
@@ -168,7 +172,9 @@ class PipelineRunner:
                 },
             )
         except Exception:
-            pass  # Non-critical — don't fail the run
+            # Workspace persistence is best-effort — keep the run's event
+            # stream complete even when the on-disk archive fails.
+            logger.exception("Failed to persist run %s artifacts to workspace", self.run_id)
 
         # Final result
         yield ("run.completed", None, {

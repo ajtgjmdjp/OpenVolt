@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import SweepRequest, MonteCarloRequest, ObjectiveConfig
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -131,9 +134,10 @@ async def _run_sweep(job_id: str, req: SweepRequest):
                 artifacts={"runs.json": _json.dumps(_results[job_id]["runs"], indent=2)},
             )
         except Exception:
-            pass
+            logger.exception("Failed to persist sweep %s to workspace", job_id)
 
     except Exception as e:
+        logger.exception("Sweep %s failed", job_id)
         _results[job_id]["status"] = "failed"
         _results[job_id]["error"] = str(e)
 
@@ -239,8 +243,9 @@ async def _run_montecarlo(job_id: str, req: MonteCarloRequest):
                 },
             )
         except Exception:
-            pass
+            logger.exception("Failed to persist Monte Carlo %s to workspace", job_id)
 
     except Exception as e:
+        logger.exception("Monte Carlo %s failed", job_id)
         _results[job_id]["status"] = "failed"
         _results[job_id]["error"] = str(e)
