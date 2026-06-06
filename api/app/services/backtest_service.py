@@ -29,6 +29,29 @@ except ImportError:
 from ..data.presets import PRESETS
 
 
+# --- Tunables ---------------------------------------------------------------
+TRADING_DAYS_PER_YEAR = 252
+MIN_PRICE_OBS_PER_TICKER = 30  # Drop a ticker if it has fewer than N observations.
+MIN_AVAILABLE_TICKERS = 2
+MIN_TRADING_DAYS = 30
+SKIP_REBALANCE_BEFORE_DAY = 20  # Warm-up so cov estimation has a window.
+ROLLING_TE_WINDOW = 30
+COV_WINDOW_DAYS = 252
+MIN_RETURNS_FOR_COV = 20
+SHARE_EPSILON = 1e-10
+TRACE_EPSILON = 1e-12
+# Rebalance frequency → trading-day stride.
+REBAL_INTERVAL_DAYS = {"daily": 1, "weekly": 5, "monthly": 21}
+# Default tax/preset values applied when the preset omits them.
+DEFAULT_TAX_RATE = 0.20315
+DEFAULT_INITIAL_INVESTMENT = 100_000_000
+DEFAULT_CASH_BUFFER = 1_000_000
+DEFAULT_TURNOVER_CAP = 0.15
+DEFAULT_PER_NAME_CAP = 0.20
+DEFAULT_TCOST_BPS = 5.0
+DEFAULT_MIN_TRADE_NOTIONAL = 100_000
+
+
 def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
                              period: str = "1y", rebalance_frequency: str = "weekly",
                              lambda_te: float = 200.0, lambda_tax: float = 400.0,
@@ -70,13 +93,17 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
         close = data[["Close"]].rename(columns={"Close": tickers[0]}) if N == 1 else data["Close"]
 
     # Keep only tickers that have data, ffill gaps
-    available = [t for t in tickers if t in close.columns and close[t].notna().sum() > 30]
-    if len(available) < 2:
+    available = [
+        t
+        for t in tickers
+        if t in close.columns and close[t].notna().sum() > MIN_PRICE_OBS_PER_TICKER
+    ]
+    if len(available) < MIN_AVAILABLE_TICKERS:
         raise ValueError(f"Not enough tickers with data: {len(available)}")
     close = close[available].ffill().dropna()
     T = len(close)
 
-    if T < 30:
+    if T < MIN_TRADING_DAYS:
         raise ValueError(f"Not enough price data: {T} days")
 
     # Recompute bench_w for available tickers only
@@ -88,8 +115,8 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
         tickers = available
         N = len(tickers)
 
-    initial_investment = preset.get("initial_investment", 100_000_000)
-    tax_rate = preset.get("tax_rate", 0.20315)
+    initial_investment = preset.get("initial_investment", DEFAULT_INITIAL_INVESTMENT)
+    tax_rate = preset.get("tax_rate", DEFAULT_TAX_RATE)
 
     # Build portfolio at start date
     prices_0 = close.iloc[0].values.astype(float)
@@ -135,8 +162,7 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
     rebalance_count = 0
 
     obj = preset.get("objective", {})
-    freq_map = {"daily": 1, "weekly": 5, "monthly": 21}
-    rebal_interval = freq_map.get(rebalance_frequency, 5)
+    rebal_interval = REBAL_INTERVAL_DAYS.get(rebalance_frequency, REBAL_INTERVAL_DAYS["weekly"])
 
     for t in range(T):
         prices_t = close.iloc[t].values.astype(float)
@@ -166,27 +192,27 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
 
         # Rolling TE
         rolling_te = 0.0
-        if len(active_returns) >= 30:
-            window = active_returns[-30:]
-            rolling_te = float(np.std(window) * np.sqrt(252))
+        if len(active_returns) >= ROLLING_TE_WINDOW:
+            window = active_returns[-ROLLING_TE_WINDOW:]
+            rolling_te = float(np.std(window) * np.sqrt(TRADING_DAYS_PER_YEAR))
 
         rebalanced = False
         day_trades = 0
 
         # Rebalance
-        if t > 20 and t % rebal_interval == 0:
+        if t > SKIP_REBALANCE_BEFORE_DAY and t % rebal_interval == 0:
             # Drift weights
             bench_total = sum(bench_shares[i] * prices_t[i] for i in range(N))
             drifted_w = [bench_shares[i] * prices_t[i] / bench_total for i in range(N)]
 
             # Covariance from returns
-            start = max(1, t - 252)
+            start = max(1, t - COV_WINDOW_DAYS)
             returns_slice = close.iloc[start:t+1].pct_change().dropna().values
-            if len(returns_slice) >= 20:
-                cov = np.cov(returns_slice.T) * 252
+            if len(returns_slice) >= MIN_RETURNS_FOR_COV:
+                cov = np.cov(returns_slice.T) * TRADING_DAYS_PER_YEAR
                 # Trace normalize
                 tr = np.trace(cov)
-                if tr > 1e-12:
+                if tr > TRACE_EPSILON:
                     cov *= N / tr
 
                 risk = ov.FullCovarianceRisk(asset_ids=tickers, covariance=cov)
@@ -198,21 +224,21 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
                     asset_ids=tickers,
                     prices=prices_t,
                     benchmark_weights=np.array(drifted_w),
-                    transaction_cost_bps=np.full(N, 5.0),
+                    transaction_cost_bps=np.full(N, DEFAULT_TCOST_BPS),
                     risk_model=risk,
                 )
                 config = ov.OptimizationConfig()
-                config.constraints.max_turnover = 0.15
-                config.constraints.cash_buffer = 1_000_000
+                config.constraints.max_turnover = DEFAULT_TURNOVER_CAP
+                config.constraints.cash_buffer = DEFAULT_CASH_BUFFER
                 for tk in tickers:
-                    config.constraints.weight_bounds[tk] = ov.WeightBound(0.0, 0.20)
+                    config.constraints.weight_bounds[tk] = ov.WeightBound(0.0, DEFAULT_PER_NAME_CAP)
                 config.objective.tracking_error = lambda_te
                 config.objective.transaction_cost = 0.0
                 config.objective.tax_cost = lambda_tax
                 config.taxes.short_term_rate = tax_rate
                 config.taxes.long_term_rate = tax_rate
                 config.taxes.wash_sale_window_days = None
-                config.min_trade_notional = 100_000
+                config.min_trade_notional = DEFAULT_MIN_TRADE_NOTIONAL
                 config.round_to_whole_shares = True
                 config.solver = solver
 
@@ -231,8 +257,8 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
                     for trade in sell_trades:
                         idx = ticker_idx[trade.asset_id]
                         remaining = trade.shares
-                        for lot in lots[:]:
-                            if lot.asset_id != trade.asset_id or remaining <= 1e-10:
+                        for lot in lots:
+                            if lot.asset_id != trade.asset_id or remaining <= SHARE_EPSILON:
                                 continue
                             sell = min(remaining, lot.shares)
                             sale_price = prices_t[idx]
@@ -242,7 +268,8 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
                             cash_after_tax += sell * sale_price
                             lot.shares -= sell
                             remaining -= sell
-                        lots = [l for l in lots if l.shares > 1e-10]
+                    # Drop fully-depleted lots once per rebalance, not per trade.
+                    lots = [l for l in lots if l.shares > SHARE_EPSILON]
 
                     # Tax calculation via TaxEngine
                     if day_realized_gain != 0:
@@ -284,10 +311,16 @@ def run_backtest_from_preset(preset_id: str, risk_model: str = "sample",
         prev_bench = bench_nav
 
     # Summary
-    ann_ret = float(np.mean(port_returns) * 252) if port_returns else 0.0
-    ann_bench = float(np.mean(bench_returns) * 252) if bench_returns else 0.0
-    ann_vol = float(np.std(port_returns) * np.sqrt(252)) if port_returns else 0.0
-    ann_te = float(np.std(active_returns) * np.sqrt(252)) if active_returns else 0.0
+    ann_ret = float(np.mean(port_returns) * TRADING_DAYS_PER_YEAR) if port_returns else 0.0
+    ann_bench = float(np.mean(bench_returns) * TRADING_DAYS_PER_YEAR) if bench_returns else 0.0
+    ann_vol = (
+        float(np.std(port_returns) * np.sqrt(TRADING_DAYS_PER_YEAR)) if port_returns else 0.0
+    )
+    ann_te = (
+        float(np.std(active_returns) * np.sqrt(TRADING_DAYS_PER_YEAR))
+        if active_returns
+        else 0.0
+    )
     mdd = 0.0
     peak = 1.0
     cum = 1.0
